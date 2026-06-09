@@ -1,0 +1,44 @@
+{
+  "name": "computer-or-browser-use-and-smart-copilot",
+  "version": "0.1.0",
+  "description": "Computer or Browser Use and Smart Copilot - a screen-aware macOS app that advises you (Smart Copilot) or acts for you in a browser or on your Mac (Computer or Browser Use).",
+  "main": "out/main/index.js",
+  "author": "",
+  "license": "MIT",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "pack": "npm run build && electron-builder --dir",
+    "dist": "npm run build && electron-builder --mac"
+  },
+  "dependencies": {
+    "@fontsource-variable/inter": "^5.2.8",
+    "@huggingface/transformers": "^3.8.1",
+    "@xenova/transformers": "^2.0.1",
+    "framer-motion": "^11.18.2",
+    "openai": "^4.67.3",
+    "pdfjs-dist": "^6.1.200",
+    "playwright": "^1.61.1",
+    "react-markdown": "^9.1.0",
+    "remark-gfm": "^4.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.5",
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.2",
+    "electron": "^43.0.0",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^5.0.0",
+    "fast-check": "^4.8.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "^5.6.3",
+    "vite": "^8.1.3",
+    "vitest": "^4.1.9"
+  }
+}
