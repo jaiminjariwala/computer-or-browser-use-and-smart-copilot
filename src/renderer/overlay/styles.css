@@ -1,0 +1,174 @@
+* {
+    box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    width: 100%;
+}
+
+body {
+    font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+    /* Fully transparent so the user's real screen shows through (Req 4.1). */
+    background: transparent;
+    overflow: hidden;
+}
+
+/* Full-screen capture surface. A faint dim makes the drawing legible without
+   obscuring what the user is trying to highlight. */
+.overlay-root {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    cursor: none;
+    background: transparent;
+    user-select: none;
+}
+
+/* Once the follow-up input is shown, restore a normal pointer so the user can
+   move to and use the input. */
+.overlay-root--input {
+    cursor: default;
+}
+
+/* Custom crosshair that follows the mouse. Drawn in the renderer because CSS
+   `cursor` is unreliable over a transparent macOS window. mix-blend-mode keeps
+   it visible on any background (light or dark). */
+.overlay-cursor {
+    position: fixed;
+    z-index: 9;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+}
+
+/* Thin black reticle with a thin white edge — macOS-style, stays visible on
+   any background (the white edge carries it on dark, the black core on light). */
+.overlay-cursor__halo line {
+    stroke: rgba(255, 255, 255, 0.95);
+    stroke-width: 2.5;
+    stroke-linecap: butt;
+}
+
+.overlay-cursor__core line {
+    stroke: rgba(0, 0, 0, 0.85);
+    stroke-width: 1;
+    stroke-linecap: butt;
+}
+
+/* The freehand drawing surface fills the overlay; clicks pass to overlay-root. */
+/* Selection box: translucent black with a backdrop blur of what's behind it,
+   framed by a thin light border. */
+.overlay-selection {
+    position: fixed;
+    z-index: 8;
+    background: rgba(0, 0, 0, 0.28);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border: 1px solid rgba(255, 255, 255, 0.9);
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+    pointer-events: none;
+}
+
+.overlay-hint {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    margin: 0;
+    padding: 10px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #1a1a1c;
+    background: #ffffff;
+    border: 1px solid #ececef;
+    border-radius: 10px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04), 0 10px 34px rgba(0, 0, 0, 0.18);
+    pointer-events: none;
+}
+
+/* Optional follow-up input shown after drawing a region. */
+/* Capture input pill. A light frosted pill that stays visible on any
+   background: white-on-dark is naturally visible, and the dark hairline ring +
+   soft shadow make it stand out on light backgrounds too. */
+.overlay-followup {
+    position: fixed;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 340px;
+    padding: 7px 8px 7px 14px;
+    background: rgba(255, 255, 255, 0.92);
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    border-radius: 22px;
+    box-shadow:
+        0 0 0 1px rgba(0, 0, 0, 0.28),
+        0 0 0 2px rgba(255, 255, 255, 0.12),
+        0 14px 40px rgba(0, 0, 0, 0.45);
+}
+
+.overlay-followup:focus-within {
+    border-color: #c9c9cf;
+}
+
+.overlay-followup__input {
+    flex: 1 1 auto;
+    border: none;
+    outline: none;
+    background: transparent;
+    color: #1a1a1c;
+    font: inherit;
+    font-size: 13.5px;
+    line-height: 1.4;
+    cursor: text;
+}
+
+.overlay-followup__input::placeholder {
+    color: #8a8a90;
+}
+
+/* Voice dictation mic button (capture input): white background, black bars. */
+.overlay-followup__mic {
+    flex: 0 0 auto;
+    width: 30px;
+    height: 30px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: #1a1a1c;
+    background: transparent;
+    border: none;
+    border-radius: 50%;
+    cursor: pointer;
+}
+
+.overlay-followup__mic:hover {
+    background: rgba(0, 0, 0, 0.06);
+}
+
+.overlay-followup__mic:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+/* Animated voice equalizer shown on the mic button. */
+.glass-voicebars {
+    display: inline-flex;
+    align-items: center;
+    gap: 2.5px;
+    height: 16px;
+}
+
+.glass-voicebars__bar {
+    width: 2.1px;
+    height: 14px;
+    border-radius: 2px;
+    background: currentColor;
+    transform-origin: center;
+}
