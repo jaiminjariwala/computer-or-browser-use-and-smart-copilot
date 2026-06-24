@@ -1,0 +1,60 @@
+* {
+    box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    width: 100%;
+    background: transparent;
+    overflow: hidden;
+}
+
+/* The full window: a thin draggable ring around the button so the user can
+   reposition the floating pencil. */
+.pencil-root {
+    -webkit-app-region: drag;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+}
+
+/* The circular pencil button — clickable (no-drag) and centered. */
+.pencil-btn {
+    -webkit-app-region: no-drag;
+    width: 52px;
+    height: 52px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #ffffff;
+    background: #111114;
+    border: 2px solid rgba(255, 255, 255, 0.85);
+    border-radius: 50%;
+    cursor: pointer;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.32);
+    transition: transform 0.08s ease, background 0.12s ease;
+    -webkit-font-smoothing: antialiased;
+}
+
+.pencil-btn:hover {
+    background: #2a2a30;
+    transform: scale(1.05);
+}
+
+.pencil-btn:active {
+    transform: scale(0.95);
+}
+
+.pencil-emoji {
+    font-size: 24px;
+    line-height: 1;
+    /* keep the emoji crisp/centered */
+    display: block;
+}
