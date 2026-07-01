@@ -1,0 +1,51 @@
+appId: com.glass.screencopilot
+productName: Computer or Browser Use and Smart Copilot
+copyright: Copyright © 2025 Computer or Browser Use and Smart Copilot
+
+directories:
+  output: release
+  buildResources: build
+
+# Package the electron-vite production output (out/) plus package.json.
+# package.json "main" points at out/main/index.js.
+#
+# electron-vite bundles the main process (out/main/index.js) and the renderer
+# (out/renderer/**, including the transformers.js / ONNX-Runtime wasm) into
+# self-contained output, so NOTHING under node_modules is required at runtime.
+# By default electron-builder still copies every production dependency into the
+# app (@huggingface/transformers, onnxruntime-node, sharp, ...), which alone is
+# ~1GB of dead weight. Excluding node_modules drops the packaged app from
+# ~2GB to a few hundred MB (mostly the Electron framework itself) with no
+# behavior change, because those libs already live inside out/.
+files:
+  - out/**
+  - package.json
+  - '!node_modules/**/*'
+
+# macOS configuration.
+mac:
+  category: public.app-category.productivity
+  icon: build/icon.icns
+  target:
+    - dmg
+    - zip
+  # Odin needs the macOS Screen Recording permission (TCC). Screen Recording
+  # does not require an Info.plist usage-description key (unlike camera/mic);
+  # the user grants it via System Settings > Privacy & Security > Screen Recording.
+  # We declare camera/mic usage strings defensively in case capture APIs touch them.
+  extendInfo:
+    NSCameraUsageDescription: Computer or Browser Use and Smart Copilot captures the selected screen region to provide on-screen guidance.
+    NSMicrophoneUsageDescription: Computer or Browser Use and Smart Copilot uses the microphone for voice dictation so you can speak instead of type.
+  hardenedRuntime: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  # Signing is intentionally NOT configured for a personal/local build.
+  # identity: null produces an unsigned .app/.dmg suitable for local use.
+  # For distribution, set a valid Developer ID identity and enable notarization.
+  identity: null
+
+dmg:
+  title: Computer or Browser Use and Smart Copilot
+
+# No publish provider configured for personal builds.
+publish: null

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <!-- Allow JIT and unsigned executable memory required by the Electron/V8 runtime
+         under the macOS Hardened Runtime. -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <!-- Microphone access for in-app voice dictation (speech-to-text). -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+    <!-- Screen Recording is gated by macOS TCC at runtime (not by an entitlement);
+         the user grants it in System Settings. No screen-capture entitlement key
+         is required here. -->
+  </dict>
+</plist>
