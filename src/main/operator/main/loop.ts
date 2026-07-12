@@ -20,3 +20,15 @@ export type {
 } from './loop/deps'
 
 export { AgentLoop, createAgentLoop } from './loop/agent-loop'
+
+export {
+    actionSignature,
+    trailingRepeatCount,
+    buildProgressHint,
+    hardStuckReason,
+    SOFT_REPEAT_THRESHOLD,
+    SOFT_FAILURE_THRESHOLD,
+    HARD_REPEAT_THRESHOLD,
+    HARD_FAILURE_THRESHOLD,
+    type ProgressThresholds
+} from './loop/progress'

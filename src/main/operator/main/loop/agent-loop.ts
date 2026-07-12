@@ -29,6 +29,10 @@ import type {
     LoopSession
 } from './deps'
 import { isTerminalState, type TerminalState } from './states'
+import { actionSignature, buildProgressHint, hardStuckReason } from './progress'
+
+/** Most-recent executed Actions retained for stuck/repeat detection. */
+const PROGRESS_WINDOW = 8
 
 /**
  * Agent Loop Controller (Task 13) — the perceive → reason → act → observe state
@@ -140,6 +144,19 @@ export class AgentLoop {
      * hiccup or one bad model turn no longer aborts the whole task.
      */
     private reasoningFailures = 0
+    /**
+     * The most-recent executed Actions (capped at {@link PROGRESS_WINDOW}), used
+     * to detect the agent repeating the same ineffective Action so it can be
+     * nudged to self-correct (and, if it persists, fail fast). Only executed
+     * Actions are tracked — blocked/declined Actions never reach the executor.
+     */
+    private readonly recentActions: Action[] = []
+    /**
+     * Consecutive executed Actions that ended in a non-success ActionResult
+     * (failure/blocked/rejected) since the last successful Action. Reset to 0 on
+     * any success. Feeds the self-correction guidance and the hard stuck-limit.
+     */
+    private consecutiveActionFailures = 0
 
     constructor(deps: AgentLoopDeps) {
         this.perception = deps.perception
@@ -218,6 +235,8 @@ export class AgentLoop {
         this.pendingAction = null
         this.pendingConfirmation = null
         this.reasoningFailures = 0
+        this.recentActions.length = 0
+        this.consecutiveActionFailures = 0
     }
 
     /**
@@ -417,6 +436,34 @@ export class AgentLoop {
             return false
         }
 
+        // Reliability: if the agent is hopelessly stuck (same Action repeated
+        // many times, or a long run of consecutive failures), fail fast with a
+        // clear reason instead of grinding through the whole Step_Budget.
+        const stuck = hardStuckReason(this.recentActions, this.consecutiveActionFailures)
+        if (stuck) {
+            this.recordStep({
+                observation: this.currentObservation,
+                reasoning: { outcome: 'failure', rationale: stuck, providerId: null }
+            })
+            this.emitters.emitError?.({
+                kind: 'action-failed',
+                message: stuck,
+                recoverable: true,
+                action: 'retry'
+            })
+            this.enterTerminal('failed')
+            return false
+        }
+
+        // Reliability: below the hard limit, fold a one-shot corrective hint into
+        // this reasoning turn so the model self-corrects (stops repeating an
+        // ineffective Action / a failing approach) rather than looping.
+        const progressHint = buildProgressHint(this.recentActions, this.consecutiveActionFailures)
+        const guidance =
+            progressHint !== null
+                ? [...(session.guidance ?? []), progressHint]
+                : session.guidance
+
         const ctx = buildReasoningContext(
             session.goal.text,
             session.summary,
@@ -424,7 +471,7 @@ export class AgentLoop {
             this.currentObservation,
             this.keepRecent,
             environmentHintFor(session.environment),
-            session.guidance
+            guidance
         )
         const outcome = await this.reasoning.reason(ctx)
 
@@ -598,6 +645,13 @@ export class AgentLoop {
                 action: 'retry'
             })
         }
+
+        // Reliability bookkeeping: remember executed Actions (for repeat
+        // detection) and track the consecutive-failure streak (reset on success).
+        this.recentActions.push(pending.action)
+        if (this.recentActions.length > PROGRESS_WINDOW) this.recentActions.shift()
+        this.consecutiveActionFailures =
+            result.status === 'success' ? 0 : this.consecutiveActionFailures + 1
 
         this.recordStep({
             observation: this.currentObservation!,
