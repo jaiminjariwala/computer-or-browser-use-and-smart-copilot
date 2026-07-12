@@ -6,7 +6,7 @@
  * session views (Req 1, 6, 8, 14, 18).
  */
 
-import type { Trajectory, TrajectorySummary, TrajectoryStepView } from './trajectory'
+import type { Trajectory, TrajectorySummary, TrajectoryStepView, TokenUsage } from './trajectory'
 
 /** Degree of independence granted to the agent for a session (Req 8). */
 export type AutonomyLevel = 'manual' | 'supervised' | 'autonomous'
@@ -73,6 +73,8 @@ export interface AgentSessionView {
     environment?: EnvironmentId
     trajectory: TrajectoryStepView[]
     summary: TrajectorySummary
+    /** Summed token usage across every step of the session (observability). */
+    usageTotal?: TokenUsage
     createdAt: string
     updatedAt: string
 }

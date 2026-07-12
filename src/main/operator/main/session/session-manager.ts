@@ -202,6 +202,8 @@ export class SessionManager {
                 createdAt: input.reasoning.createdAt ?? this.now()
             }
         }
+        if (input.reasoning.model !== undefined) step.reasoning.model = input.reasoning.model
+        if (input.reasoning.usage !== undefined) step.reasoning.usage = clone(input.reasoning.usage)
         if (input.action !== undefined) step.action = clone(input.action)
         if (input.result !== undefined) step.result = clone(input.result)
         if (input.events !== undefined && input.events.length > 0) {

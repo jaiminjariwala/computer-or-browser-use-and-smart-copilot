@@ -4,6 +4,7 @@ import type {
     TrajectoryStep,
     TrajectoryStepView
 } from '@op-shared/types'
+import { sumUsage } from '../../shared/usage'
 import { clone } from './factories'
 
 /**
@@ -28,6 +29,8 @@ export function toTrajectoryStepView(step: TrajectoryStep): TrajectoryStepView {
         providerId: step.reasoning.providerId,
         capturedAt: step.observation.capturedAt
     }
+    if (step.reasoning.model !== undefined) view.model = step.reasoning.model
+    if (step.reasoning.usage !== undefined) view.usage = clone(step.reasoning.usage)
     if (step.action !== undefined) view.action = clone(step.action)
     if (step.result !== undefined) view.result = clone(step.result)
     if (step.events !== undefined) view.events = clone(step.events)
@@ -45,6 +48,7 @@ export function toAgentSessionView(session: AgentSession): AgentSessionView {
         environment: session.environment,
         trajectory: session.trajectory.map(toTrajectoryStepView),
         summary: clone(session.summary),
+        usageTotal: sumUsage(session.trajectory),
         createdAt: session.createdAt,
         updatedAt: session.updatedAt
     }

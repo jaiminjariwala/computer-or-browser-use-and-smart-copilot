@@ -6,7 +6,7 @@
  * AI_Gateway config + its save input (Req 15, 21).
  */
 
-import type { ReasoningContext, ReasoningOutcome } from './reasoning'
+import type { ObservedOutcome, ReasoningContext } from './reasoning'
 
 /** The AI_Gateway configuration (apiKey stored encrypted via safeStorage). */
 export interface GatewayConfig {
@@ -70,8 +70,8 @@ export interface ModelProvider {
     id: string
     /** Reachability/health probe (Req 21.3, 21.4). */
     isAvailable(): Promise<boolean>
-    /** Action | completion | help | failure. */
-    reason(ctx: ReasoningContext): Promise<ReasoningOutcome>
+    /** Action | completion | help | failure, annotated with model id + token usage. */
+    reason(ctx: ReasoningContext): Promise<ObservedOutcome>
     /** Vision-capable models only (Req 21.7). */
     listVisionModels(): Promise<string[]>
 }

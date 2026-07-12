@@ -9,6 +9,7 @@ import type {
     Action,
     ActionResult,
     SafetyEvent,
+    TokenUsage,
     TrajectoryStep,
     TrajectorySummary
 } from '@op-shared/types'
@@ -95,6 +96,10 @@ export interface AppendStepReasoning {
     rationale: string
     /** Serving Model_Provider id; null when all providers failed (Req 21.9). */
     providerId?: string | null
+    /** The concrete model id that served this step (observability). */
+    model?: string
+    /** Token usage the serving provider reported for this step (observability). */
+    usage?: TokenUsage
     /** Optional explicit id/timestamp (otherwise minted). */
     id?: string
     createdAt?: string

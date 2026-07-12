@@ -19,6 +19,13 @@ export interface RawToolCall {
     function?: { name?: string; arguments?: string }
 }
 
+/** Token usage as reported by an OpenAI-compatible chat completion. */
+export interface RawUsage {
+    prompt_tokens?: number
+    completion_tokens?: number
+    total_tokens?: number
+}
+
 /** The narrow slice of a chat-completion result we read back. */
 export interface OperatorChatResult {
     choices: Array<{
@@ -27,6 +34,8 @@ export interface OperatorChatResult {
             tool_calls?: RawToolCall[]
         }
     }>
+    /** Token usage for the call (observability); absent on endpoints that omit it. */
+    usage?: RawUsage
 }
 
 /** The parameters we send on a reasoning request (vision + tool-calling). */

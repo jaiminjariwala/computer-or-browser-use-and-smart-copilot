@@ -5,7 +5,8 @@ import type {
     EnvironmentId,
     LoopState,
     Observation,
-    PermissionSnapshot
+    PermissionSnapshot,
+    TokenUsage
 } from '@op-shared/types'
 import {
     blockedActionResult,
@@ -69,6 +70,10 @@ interface PendingAction {
     action: Action
     rationale: string
     providerId: string | null
+    /** The concrete model id that proposed this Action (observability). */
+    model?: string
+    /** Token usage reported for the reasoning call that proposed this Action. */
+    usage?: TokenUsage
     classification?: ClassificationContext
 }
 
@@ -278,7 +283,9 @@ export class AgentLoop {
                 reasoning: {
                     outcome: 'action',
                     rationale: this.pendingAction.rationale,
-                    providerId: this.pendingAction.providerId
+                    providerId: this.pendingAction.providerId,
+                    model: this.pendingAction.model,
+                    usage: this.pendingAction.usage
                 },
                 action: this.pendingAction.action,
                 result: {
@@ -441,7 +448,13 @@ export class AgentLoop {
                 // then try something else" behavior (Req 3.4, 6.5).
                 this.recordStep({
                     observation: this.currentObservation,
-                    reasoning: { outcome: 'failure', rationale: outcome.reason, providerId: outcome.providerId }
+                    reasoning: {
+                        outcome: 'failure',
+                        rationale: outcome.reason,
+                        providerId: outcome.providerId,
+                        model: outcome.model,
+                        usage: outcome.usage
+                    }
                 })
                 this.reasoningFailures += 1
                 const infra = outcome.reason.startsWith('all-providers-failed')
@@ -476,7 +489,13 @@ export class AgentLoop {
                 // Completion signal → no Action executes; report result (Req 6.2, 3.6).
                 this.recordStep({
                     observation: this.currentObservation,
-                    reasoning: { outcome: 'completion', rationale: outcome.summary, providerId: outcome.providerId }
+                    reasoning: {
+                        outcome: 'completion',
+                        rationale: outcome.summary,
+                        providerId: outcome.providerId,
+                        model: outcome.model,
+                        usage: outcome.usage
+                    }
                 })
                 this.enterTerminal('completed')
                 this.emitters.presentCompletion?.(outcome.summary)
@@ -486,7 +505,13 @@ export class AgentLoop {
                 // Help signal → no Action executes; present the question (Req 6.4, 3.6).
                 this.recordStep({
                     observation: this.currentObservation,
-                    reasoning: { outcome: 'help', rationale: outcome.question, providerId: outcome.providerId }
+                    reasoning: {
+                        outcome: 'help',
+                        rationale: outcome.question,
+                        providerId: outcome.providerId,
+                        model: outcome.model,
+                        usage: outcome.usage
+                    }
                 })
                 this.enterAwaitingHelp(outcome.question)
                 return false
@@ -497,6 +522,8 @@ export class AgentLoop {
                     action: outcome.action,
                     rationale: outcome.rationale,
                     providerId: outcome.providerId,
+                    model: outcome.model,
+                    usage: outcome.usage,
                     classification: this.getClassification?.(outcome.action)
                 }
                 return this.decideAction()
@@ -574,7 +601,13 @@ export class AgentLoop {
 
         this.recordStep({
             observation: this.currentObservation!,
-            reasoning: { outcome: 'action', rationale: pending.rationale, providerId: pending.providerId },
+            reasoning: {
+                outcome: 'action',
+                rationale: pending.rationale,
+                providerId: pending.providerId,
+                model: pending.model,
+                usage: pending.usage
+            },
             action: pending.action,
             result
         })
@@ -603,7 +636,13 @@ export class AgentLoop {
         const result = blockedActionResult(decision, this.now) as ActionResult
         this.recordStep({
             observation: this.currentObservation!,
-            reasoning: { outcome: 'action', rationale: pending.rationale, providerId: pending.providerId },
+            reasoning: {
+                outcome: 'action',
+                rationale: pending.rationale,
+                providerId: pending.providerId,
+                model: pending.model,
+                usage: pending.usage
+            },
             action: pending.action,
             result,
             events: [decision.event]

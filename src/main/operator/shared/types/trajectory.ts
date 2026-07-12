@@ -10,6 +10,19 @@
 
 import type { Action, ActionResult, Rect } from './action'
 
+/**
+ * Token usage reported by a Model_Provider for one reasoning call (observability).
+ *
+ * OpenAI-compatible endpoints return `{ prompt_tokens, completion_tokens,
+ * total_tokens }`; this is the normalized, camelCase shape recorded per step and
+ * summed per session so the UI can show how many tokens a run actually cost.
+ */
+export interface TokenUsage {
+    promptTokens: number
+    completionTokens: number
+    totalTokens: number
+}
+
 /** A captured representation of the current screen state (Req 2). */
 export interface Observation {
     id: string
@@ -54,6 +67,10 @@ export interface ReasoningStep {
     rationale: string
     /** Which Model_Provider served this step; null if all providers failed (Req 21.9). */
     providerId: string | null
+    /** The concrete model id that served this step (observability); absent when all failed. */
+    model?: string
+    /** Token usage the serving provider reported for this call (observability). */
+    usage?: TokenUsage
     createdAt: string
 }
 
@@ -99,6 +116,10 @@ export interface TrajectoryStepView {
     outcome: ReasoningStep['outcome']
     rationale: string
     providerId: string | null
+    /** The concrete model id that served this step (observability). */
+    model?: string
+    /** Token usage reported for this step (observability). */
+    usage?: TokenUsage
     action?: Action
     result?: ActionResult
     events?: SafetyEvent[]

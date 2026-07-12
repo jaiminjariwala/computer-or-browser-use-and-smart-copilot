@@ -8,7 +8,7 @@
  */
 
 import type { Action } from './action'
-import type { Observation, TrajectoryStep, TrajectorySummary } from './trajectory'
+import type { Observation, TokenUsage, TrajectoryStep, TrajectorySummary } from './trajectory'
 
 /**
  * The bounded context sent to a Model_Provider on each Reasoning_Step. This is
@@ -39,11 +39,24 @@ export type ReasoningOutcome =
     | { kind: 'failure'; reason: string }
 
 /**
- * A {@link ReasoningOutcome} plus which Model_Provider served it (Req 21.9).
- * When every provider is unavailable/fails, `providerId` is null and the
- * outcome is a failure (Req 21.5).
+ * A {@link ReasoningOutcome} optionally annotated with the observability metadata
+ * of the model call that produced it: the concrete model id and reported token
+ * usage. A concrete {@link ModelProvider} returns this; the router then adds the
+ * serving `providerId` to make a {@link RoutedOutcome}.
  */
-export type RoutedOutcome = ReasoningOutcome & { providerId: string | null }
+export type ObservedOutcome = ReasoningOutcome & {
+    /** The concrete model id that produced this outcome. */
+    model?: string
+    /** Token usage the provider reported for this call. */
+    usage?: TokenUsage
+}
+
+/**
+ * A {@link ReasoningOutcome} plus which Model_Provider served it (Req 21.9) and
+ * the observability metadata (model id + token usage). When every provider is
+ * unavailable/fails, `providerId` is null and the outcome is a failure (Req 21.5).
+ */
+export type RoutedOutcome = ObservedOutcome & { providerId: string | null }
 
 /** The reasoning entry point used by the loop: a router over the Provider_Chain. */
 export interface ReasoningRouter {

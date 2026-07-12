@@ -1,9 +1,10 @@
 import type {
     ModelProvider,
     ModelProviderConfig,
+    ObservedOutcome,
     ProviderKind,
     ReasoningContext,
-    ReasoningOutcome
+    TokenUsage
 } from '@op-shared/types'
 import { isVisionCapableModelId } from '../../config'
 import {
@@ -17,7 +18,8 @@ import {
     type ChatClientFactory,
     type OperatorChatClient,
     type OperatorChatResult,
-    type RawToolCall
+    type RawToolCall,
+    type RawUsage
 } from './client'
 
 /**
@@ -116,7 +118,7 @@ export abstract class OpenAICompatibleModelProvider implements ModelProvider {
      * THROWS so the router can fall back; a reachable-but-unparseable response
      * returns `{ kind: 'failure' }` (Req 3.4).
      */
-    async reason(ctx: ReasoningContext): Promise<ReasoningOutcome> {
+    async reason(ctx: ReasoningContext): Promise<ObservedOutcome> {
         const client = await this.resolveClient()
         if (!client) {
             throw new Error(`Provider "${this.id}" is missing a required API key.`)
@@ -153,10 +155,16 @@ export abstract class OpenAICompatibleModelProvider implements ModelProvider {
         // return `{ error: ... }` on failure); crashing here would abort the
         // whole run instead of failing this one step gracefully.
         const message = result?.choices?.[0]?.message
-        return parseReasoningResponse({
+        const outcome = parseReasoningResponse({
             content: message?.content ?? null,
             toolCalls: normalizeToolCalls(message?.tool_calls)
         })
+        // Annotate the outcome with observability metadata: the concrete model id
+        // and the token usage the endpoint reported (when it reports any).
+        const usage = toTokenUsage(result?.usage)
+        return usage
+            ? { ...outcome, model: this.model, usage }
+            : { ...outcome, model: this.model }
     }
 
     /**
@@ -182,6 +190,22 @@ export abstract class OpenAICompatibleModelProvider implements ModelProvider {
 /** Resolve after `ms` milliseconds (used for the 429 backoff). */
 function delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/**
+ * Normalize an OpenAI-compatible `usage` block into a {@link TokenUsage}, or
+ * undefined when absent / all-zero. `total_tokens` falls back to prompt +
+ * completion when the endpoint omits it.
+ */
+function toTokenUsage(raw: RawUsage | undefined): TokenUsage | undefined {
+    if (!raw) return undefined
+    const num = (v: number | undefined): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
+    const promptTokens = num(raw.prompt_tokens)
+    const completionTokens = num(raw.completion_tokens)
+    const reportedTotal = num(raw.total_tokens)
+    const totalTokens = reportedTotal > 0 ? reportedTotal : promptTokens + completionTokens
+    if (promptTokens === 0 && completionTokens === 0 && totalTokens === 0) return undefined
+    return { promptTokens, completionTokens, totalTokens }
 }
 
 /** True when a thrown SDK error looks like an HTTP 429 rate-limit. */
