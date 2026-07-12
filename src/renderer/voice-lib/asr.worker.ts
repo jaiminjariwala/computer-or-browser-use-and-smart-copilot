@@ -1,17 +1,19 @@
 /// <reference lib="webworker" />
 import { pipeline, env, type Pipeline } from '@xenova/transformers'
 
-/**
- * Dedicated speech-to-text worker.
- *
- * Runs Whisper (transformers.js) entirely off the UI thread so live/interim
- * transcription never freezes the app. The main thread posts `{ id, audio }`
- * (16 kHz mono Float32 PCM); the worker replies `{ id, text }` or
- * `{ id, error }`. Jobs are serialized so the ONNX runtime is never re-entered
- * concurrently.
- */
+    /**
+     * Dedicated speech-to-text worker.
+     *
+     * Runs Whisper (transformers.js) entirely off the UI thread so live/interim
+     * transcription never freezes the app. The main thread posts `{ id, audio }`
+     * (16 kHz mono Float32 PCM); the worker replies `{ id, text }` or
+     * `{ id, error }`. Jobs are serialized so the ONNX runtime is never re-entered
+     * concurrently.
+     */
 
-env.allowLocalModels = false
+    // `env.allowLocalModels` is typed read-only in @xenova/transformers' bundled
+    // types even though it is a writable runtime flag; cast to set it.
+    ; (env as { allowLocalModels: boolean }).allowLocalModels = false
 env.backends.onnx.wasm.numThreads = 1
 
 const MODEL = 'Xenova/whisper-tiny.en'

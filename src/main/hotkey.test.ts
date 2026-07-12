@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest'
+import type { GlassError } from '../shared/types'
 
 /**
  * Unit tests for the Hotkey Manager (task 6.1).
@@ -221,10 +222,13 @@ describe('HotkeyManager.reRegister', () => {
 
 describe('applyRegistrationResult', () => {
     function makeDeps(): {
-        emitError: ReturnType<typeof vi.fn>
-        showTray: ReturnType<typeof vi.fn>
+        emitError: Mock<(error: GlassError) => void>
+        showTray: Mock<() => void>
     } {
-        return { emitError: vi.fn(), showTray: vi.fn() }
+        return {
+            emitError: vi.fn<(error: GlassError) => void>(),
+            showTray: vi.fn<() => void>()
+        }
     }
 
     it('does nothing on success', () => {
