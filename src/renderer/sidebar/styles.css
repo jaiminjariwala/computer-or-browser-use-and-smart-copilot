@@ -777,6 +777,16 @@ body {
     line-height: 1.3;
 }
 
+/* Observability note (tokens · cost · model) under a step. */
+.glass-step__meta {
+    font-size: 10.5px;
+    color: var(--text-dim);
+    opacity: 0.75;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.3;
+    margin-top: 1px;
+}
+
 .glass-step--error .glass-step__label {
     color: #c0392b;
 }

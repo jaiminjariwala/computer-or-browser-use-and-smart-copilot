@@ -1,5 +1,6 @@
 import type { Action } from '@op-shared/types'
-import type { TrajectoryStepView, LoopState } from '@op-shared/types'
+import type { TrajectoryStepView, LoopState, TokenUsage } from '@op-shared/types'
+import { estimateCostUsd, formatCostUsd, formatTokens, hasUsage } from '@op-shared/usage'
 
 /**
  * Pure helpers for rendering merged Click Operator activity inside the Click
@@ -46,6 +47,8 @@ export interface StepItem {
     label: string
     /** The agent's short reason for this step (shown muted under the label). */
     sub?: string
+    /** Observability note: tokens · cost · model for this step (shown muted). */
+    meta?: string
     /** Outcome kind, so the UI can mark failures distinctly. */
     kind: TrajectoryStepView['outcome']
 }
@@ -56,21 +59,22 @@ export interface StepItem {
  */
 export function describeStep(step: TrajectoryStepView): StepItem {
     const rationale = step.rationale.trim()
+    const meta = formatStepUsage(step) ?? undefined
     if (step.outcome === 'action' && step.action) {
         let label = describeAction(step.action)
         if (step.result && step.result.status !== 'success') {
             const reason = step.result.reason ? `: ${step.result.reason}` : ''
             label += ` (${step.result.status}${reason})`
         }
-        return { label, sub: rationale || undefined, kind: 'action' }
+        return { label, sub: rationale || undefined, meta, kind: 'action' }
     }
     if (step.outcome === 'completion') {
-        return { label: 'Task complete', sub: rationale || undefined, kind: 'completion' }
+        return { label: 'Task complete', sub: rationale || undefined, meta, kind: 'completion' }
     }
     if (step.outcome === 'failure') {
-        return { label: 'Could not complete the task', sub: rationale || undefined, kind: 'failure' }
+        return { label: 'Could not complete the task', sub: rationale || undefined, meta, kind: 'failure' }
     }
-    return { label: 'Needs your input', sub: rationale || undefined, kind: 'help' }
+    return { label: 'Needs your input', sub: rationale || undefined, meta, kind: 'help' }
 }
 
 /**
@@ -98,7 +102,40 @@ export function formatTrajectoryStep(step: TrajectoryStepView): string {
         lines.push('**Could not complete the task.**')
     }
 
+    const usage = formatStepUsage(step)
+    if (usage) lines.push(`\`${usage}\``)
+
     return lines.join('\n\n')
+}
+
+/**
+ * A compact observability note for one step: token count, estimated cost, and
+ * the serving model — e.g. `1.2k tok · $0.0004 · gpt-4o-mini`. Returns null when
+ * the step reported no token usage (nothing to show).
+ */
+export function formatStepUsage(step: TrajectoryStepView): string | null {
+    if (!hasUsage(step.usage)) return null
+    const parts: string[] = [`${formatTokens(step.usage.totalTokens)} tok`]
+    const cost = formatCostUsd(estimateCostUsd(step.model, step.usage))
+    if (cost) parts.push(cost)
+    if (step.model) parts.push(step.model)
+    return parts.join(' · ')
+}
+
+/**
+ * A one-line session usage summary for the whole run — e.g.
+ * `12.3k tokens · $0.01 across 8 steps`. Returns null when nothing was reported.
+ */
+export function formatSessionUsage(
+    usageTotal: TokenUsage | undefined,
+    stepCount: number,
+    model?: string
+): string | null {
+    if (!hasUsage(usageTotal)) return null
+    const parts: string[] = [`${formatTokens(usageTotal.totalTokens)} tokens`]
+    const cost = formatCostUsd(estimateCostUsd(model, usageTotal))
+    if (cost) parts.push(cost)
+    return `${parts.join(' · ')} across ${stepCount} step${stepCount === 1 ? '' : 's'}`
 }
 
 /** Whether a loop state means the agent is actively working (drives the pending dots). */

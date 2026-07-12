@@ -1376,6 +1376,7 @@ export function App(): React.JSX.Element {
                                         <span className="glass-step__text">
                                             <span className="glass-step__label">{s.label}</span>
                                             {s.sub && <span className="glass-step__sub">{s.sub}</span>}
+                                            {s.meta && <span className="glass-step__meta">{s.meta}</span>}
                                         </span>
                                     </div>
                                 ))}
