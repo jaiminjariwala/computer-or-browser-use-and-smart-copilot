@@ -159,11 +159,11 @@ export function Settings(): React.JSX.Element {
             <div className="glass-settings__status">
                 <span
                     className="glass-settings__dot"
-                    style={{ background: hasCredentials ? '#19c37d' : '#d29922' }}
-                    title={hasCredentials ? 'Connected' : 'Not connected'}
+                    style={{ background: hasCredentials ? '#19c37d' : '#5b8def' }}
+                    title={hasCredentials ? 'Connected' : 'Running on-device (offline)'}
                 />
                 <span className="glass-settings__statuslabel">
-                    {hasCredentials ? 'Connected' : 'Not connected'}
+                    {hasCredentials ? 'Connected' : 'On-device (offline)'}
                 </span>
             </div>
 
