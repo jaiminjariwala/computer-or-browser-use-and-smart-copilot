@@ -10,41 +10,71 @@ import type { SessionContext } from '@shared/types'
  * fully offline.
  */
 
+/** A model-download/load progress event forwarded from the worker. */
+export interface LocalProgress {
+    status?: string
+    file?: string
+    /** 0..100 while a file is downloading. */
+    progress?: number
+    loaded?: number
+    total?: number
+}
+
+interface PendingEntry {
+    done: (r: { text?: string; error?: string }) => void
+    onProgress?: (p: LocalProgress) => void
+}
+
 let worker: Worker | null = null
 let reqId = 0
-const pending = new Map<number, (r: { text?: string; error?: string }) => void>()
+const pending = new Map<number, PendingEntry>()
 
 function getWorker(): Worker {
     if (!worker) {
         worker = new Worker(new URL('./local-vlm.worker.ts', import.meta.url), { type: 'module' })
         worker.onmessage = (
-            e: MessageEvent<{ id: number; text?: string; error?: string }>
+            e: MessageEvent<{ id: number; text?: string; error?: string; progress?: LocalProgress }>
         ): void => {
-            const cb = pending.get(e.data.id)
-            if (cb) {
-                pending.delete(e.data.id)
-                cb(e.data)
+            const entry = pending.get(e.data.id)
+            if (!entry) return
+            // Progress events stream while the model downloads; keep the request open.
+            if (e.data.progress) {
+                entry.onProgress?.(e.data.progress)
+                return
             }
+            pending.delete(e.data.id)
+            entry.done(e.data)
         }
         worker.onerror = (event: ErrorEvent): void => {
             const detail = event?.message
                 ? `Local model error: ${event.message}`
                 : 'Local model failed to load.'
             worker = null
-            for (const [id, cb] of pending) {
+            for (const [id, entry] of pending) {
                 pending.delete(id)
-                cb({ error: detail })
+                entry.done({ error: detail })
             }
         }
     }
     return worker
 }
 
-/** Run the local model on the given images + prompt. Rejects on failure. */
-export function runLocalFallback(images: string[], prompt: string): Promise<string> {
+/**
+ * Run the local model on the given images + prompt. Rejects on failure.
+ * `onProgress` streams model-download progress (only meaningful on first use,
+ * before the model is cached).
+ */
+export function runLocalFallback(
+    images: string[],
+    prompt: string,
+    onProgress?: (p: LocalProgress) => void
+): Promise<string> {
     return new Promise((resolve, reject) => {
         const id = ++reqId
-        pending.set(id, (r) => (r.error ? reject(new Error(r.error)) : resolve(r.text ?? '')))
+        pending.set(id, {
+            done: (r) => (r.error ? reject(new Error(r.error)) : resolve(r.text ?? '')),
+            onProgress
+        })
         getWorker().postMessage({ id, images, prompt })
     })
 }
@@ -65,8 +95,16 @@ export function buildFallbackRequest(ctx: SessionContext): { images: string[]; p
     }
     pushUnique(ctx.currentCapture?.dataUrl)
 
+    // The prompt must match what the on-device model can actually do. WITH a
+    // screenshot it is a vision "next step" task; WITHOUT one it is a plain
+    // question, so telling the text model to "look at the screenshot" makes it
+    // answer generically ("what's the first step?") instead of answering the
+    // question. Branch the system line accordingly.
+    const hasImages = images.length > 0
     const lines: string[] = [
-        'You are Smart Copilot, a screen co-pilot. Look at the screenshot(s) and give a clear, concise next step or answer.'
+        hasImages
+            ? 'You are Smart Copilot, a screen co-pilot. Look at the screenshot(s) and give a clear, concise next step or answer.'
+            : 'You are Smart Copilot, a helpful assistant. Answer the user\'s latest question directly and completely. If they ask for code, reply with correct, runnable, well-commented code.'
     ]
     const goal = ctx.summary?.inferredIntent?.trim()
     if (goal) lines.push(`The user's goal so far: ${goal}`)

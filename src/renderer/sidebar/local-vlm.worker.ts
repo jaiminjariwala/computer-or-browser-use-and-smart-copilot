@@ -33,16 +33,22 @@ import {
 
 env.allowLocalModels = false
 
-// Vision models, smallest first (used when the request carries screenshots).
+// Vision models, BEST first (used when the request carries screenshots). The
+// larger 500M gives noticeably better screen advice; we fall back to the tiny
+// 256M only if the bigger one cannot load (e.g. low memory / no WebGPU), so the
+// first-run experience is as good as the machine allows.
 const VISION_MODEL_IDS = [
-    'HuggingFaceTB/SmolVLM-256M-Instruct',
-    'HuggingFaceTB/SmolVLM-500M-Instruct'
+    'HuggingFaceTB/SmolVLM-500M-Instruct',
+    'HuggingFaceTB/SmolVLM-256M-Instruct'
 ]
 
-// Text models, smallest first (used for a plain typed question, no image).
+// Text models, BEST first (used for a plain typed question, no image). The 1.7B
+// model writes much more coherent prose + code than the 360M, so a recruiter who
+// downloads the app and just starts typing gets a good answer with no key; the
+// 360M remains a fast fallback if the larger model cannot load.
 const TEXT_MODEL_IDS = [
-    'HuggingFaceTB/SmolLM2-360M-Instruct',
-    'HuggingFaceTB/SmolLM2-1.7B-Instruct'
+    'HuggingFaceTB/SmolLM2-1.7B-Instruct',
+    'HuggingFaceTB/SmolLM2-360M-Instruct'
 ]
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -56,17 +62,31 @@ let text: Text | null = null
 let visionStart = 0
 let textStart = 0
 
+/**
+ * Set for the duration of a request so the model loaders can stream download
+ * progress back to the UI (the first on-device answer downloads the model, which
+ * takes a while — we surface a "downloading" indicator instead of a silent hang).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let reportProgress: ((p: any) => void) | null = null
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const progressCallback = (p: any): void => reportProgress?.(p)
+
 async function loadVision(id: string): Promise<Vision> {
     try {
-        const processor = await AutoProcessor.from_pretrained(id)
+        const processor = await AutoProcessor.from_pretrained(id, { progress_callback: progressCallback })
         const model = await AutoModelForVision2Seq.from_pretrained(id, {
             dtype: { embed_tokens: 'fp16', vision_encoder: 'fp16', decoder_model_merged: 'q4' },
-            device: 'webgpu'
+            device: 'webgpu',
+            progress_callback: progressCallback
         })
         return { id, processor, model }
     } catch {
-        const processor = await AutoProcessor.from_pretrained(id)
-        const model = await AutoModelForVision2Seq.from_pretrained(id, { device: 'wasm' })
+        const processor = await AutoProcessor.from_pretrained(id, { progress_callback: progressCallback })
+        const model = await AutoModelForVision2Seq.from_pretrained(id, {
+            device: 'wasm',
+            progress_callback: progressCallback
+        })
         return { id, processor, model }
     }
 }
@@ -75,11 +95,15 @@ async function loadText(id: string): Promise<Text> {
     try {
         const generator = await pipeline('text-generation', id, {
             dtype: 'q4',
-            device: 'webgpu'
+            device: 'webgpu',
+            progress_callback: progressCallback
         })
         return { id, generator }
     } catch {
-        const generator = await pipeline('text-generation', id, { device: 'wasm' })
+        const generator = await pipeline('text-generation', id, {
+            device: 'wasm',
+            progress_callback: progressCallback
+        })
         return { id, generator }
     }
 }
@@ -90,7 +114,14 @@ async function generateVision(m: Vision, imgs: any[], prompt: string): Promise<s
     const messages = [{ role: 'user', content }]
     const templated = m.processor.apply_chat_template(messages, { add_generation_prompt: true })
     const inputs = await m.processor(templated, imgs)
-    const generated = await m.model.generate({ ...inputs, max_new_tokens: 512, do_sample: false })
+    const generated = await m.model.generate({
+        ...inputs,
+        max_new_tokens: 512,
+        do_sample: false,
+        // Stop the small model from looping the same phrase over and over.
+        repetition_penalty: 1.3,
+        no_repeat_ngram_size: 3
+    })
     const decoded = m.processor.batch_decode(
         generated.slice(null, [inputs.input_ids.dims.at(-1), null]),
         { skip_special_tokens: true }
@@ -100,7 +131,14 @@ async function generateVision(m: Vision, imgs: any[], prompt: string): Promise<s
 
 async function generateText(m: Text, prompt: string): Promise<string> {
     const messages = [{ role: 'user', content: prompt }]
-    const output = await m.generator(messages, { max_new_tokens: 512, do_sample: false })
+    const output = await m.generator(messages, {
+        max_new_tokens: 512,
+        do_sample: false,
+        // A repetition penalty + no-repeat n-gram window stop the tiny model from
+        // falling into the "The map method... The map method..." loops.
+        repetition_penalty: 1.3,
+        no_repeat_ngram_size: 3
+    })
     // With a chat-message input the pipeline returns the full conversation; the
     // assistant reply is the last message. Fall back to raw string shapes.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -174,11 +212,15 @@ let chain: Promise<void> = Promise.resolve()
 ctx.onmessage = (e: MessageEvent<InMessage>): void => {
     const { id, images, prompt } = e.data
     chain = chain.then(async () => {
+        // Stream model-download progress for THIS request to the UI.
+        reportProgress = (p) => ctx.postMessage({ id, progress: p })
         try {
             const reply = await answer(images, prompt)
             ctx.postMessage({ id, text: reply })
         } catch (err) {
             ctx.postMessage({ id, error: err instanceof Error ? err.message : String(err) })
+        } finally {
+            reportProgress = null
         }
     })
 }
