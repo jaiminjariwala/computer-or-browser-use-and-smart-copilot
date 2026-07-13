@@ -4,6 +4,10 @@ import remarkGfm from 'remark-gfm'
 import type { GlassError, SessionContext, SessionListItem, SessionSummary, TurnCapture, TurnView } from '@shared/types'
 import type { AgentSessionView, ConfirmationRequest, LoopStateView } from '@op-shared/types'
 import { Settings } from './Settings'
+import { CodeMarkdown } from './CodeBlock'
+import { CodePanel } from './CodePanel'
+import { CodePanelContext, type CodeArtifact } from './codePanelContext'
+import { extractCodeBlocks } from './codeTheme'
 import { getConfigBridge } from './config-bridge'
 import { isSubmittable, makeTextTurn } from './chat'
 import { describeStep, describeAction, isBusyState, isTerminalState, type StepItem } from './operator'
@@ -65,12 +69,21 @@ function getOperatorBridge(): NonNullable<typeof window.operator> | null {
     return op && typeof op.startGoal === 'function' ? op : null
 }
 
+/** Markdown component overrides: render fenced code with the rich CodeBlock. */
+const MARKDOWN_COMPONENTS = {
+    code: CodeMarkdown,
+    // Our CodeBlock provides its own container, so drop the default <pre> wrapper.
+    pre: ({ children }: { children?: React.ReactNode }) => <>{children}</>
+}
+
 /** Render assistant text as Markdown; user text stays plain. */
 function TurnBody({ turn }: { turn: TurnView }): React.JSX.Element {
     if (turn.role === 'assistant') {
         return (
             <div className="glass-markdown">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{turn.text ?? ''}</ReactMarkdown>
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
+                    {turn.text ?? ''}
+                </ReactMarkdown>
             </div>
         )
     }
@@ -431,6 +444,17 @@ export function App(): React.JSX.Element {
     const [state, setState] = useState<ConversationState>(() => initialConversationState())
     const [draft, setDraft] = useState('')
     const [showSettings, setShowSettings] = useState(false)
+    // The code artifact shown in the right-hand panel (Claude-style), or null.
+    const [codeArtifact, setCodeArtifact] = useState<CodeArtifact | null>(null)
+    // User-draggable width of the right code panel (persists while open).
+    const [codePanelWidth, setCodePanelWidth] = useState(480)
+    // Set while the on-device model downloads on first use (one-time), so the
+    // wait shows a friendly status instead of looking like a hang.
+    const [downloadStatus, setDownloadStatus] = useState<string | null>(null)
+    const codePanelApi = useRef({ open: (a: CodeArtifact) => setCodeArtifact(a) }).current
+    // Tracks the last copilot answer we auto-opened, so a fresh answer with code
+    // opens the panel exactly once (clicking a pill re-opens it thereafter).
+    const lastAutoOpenedTurnRef = useRef<string | null>(null)
     const [navOpen, setNavOpen] = useState(() =>
         typeof window !== 'undefined' ? window.innerWidth > 600 : true
     )
@@ -563,9 +587,18 @@ export function App(): React.JSX.Element {
             // report the result back so main appends it + clears pending.
             bridge.onGatewayFallback?.((ctx, originId) => {
                 const { images, prompt } = buildFallbackRequest(ctx)
-                runLocalFallback(images, prompt)
+                runLocalFallback(images, prompt, (p) => {
+                    // Show the one-time download status while a model file streams in.
+                    const done = p.status === 'ready' || p.status === 'done'
+                    const downloading =
+                        !done && (p.progress === undefined || p.progress < 100) && Boolean(p.file || p.status)
+                    if (downloading) {
+                        setDownloadStatus('Setting up the on-device model… (one-time download)')
+                    }
+                })
                     .then((text) => bridge.submitFallbackResult?.(text || null, originId))
                     .catch(() => bridge.submitFallbackResult?.(null, originId))
+                    .finally(() => setDownloadStatus(null))
             }),
             // Do NOT auto-open Settings on launch when credentials are missing;
             // the user opens Settings themselves. A missing-key error still
@@ -654,6 +687,25 @@ export function App(): React.JSX.Element {
         opState.error,
         operatorMode
     ])
+
+    // Auto-open the newest copilot answer's code in the right-hand panel the
+    // first time it arrives (Claude-style). Marked per-turn so it opens exactly
+    // once; the code pill in the message re-opens it on demand thereafter.
+    useEffect(() => {
+        const turns = state.turns
+        for (let i = turns.length - 1; i >= 0; i -= 1) {
+            const t = turns[i]
+            if (t.role !== 'assistant') continue
+            if (t.id === lastAutoOpenedTurnRef.current) return
+            lastAutoOpenedTurnRef.current = t.id
+            const blocks = extractCodeBlocks(t.text ?? '')
+            if (blocks.length > 0) {
+                const b = blocks[blocks.length - 1]
+                setCodeArtifact({ code: b.code, language: b.language })
+            }
+            return
+        }
+    }, [state.turns])
 
     // Keep draftRef in sync (read synchronously by dictation), auto-grow the
     // input up to ~4 lines, then scroll to keep the latest line visible. Runs
@@ -1010,6 +1062,9 @@ export function App(): React.JSX.Element {
     }, [])
 
     const onNewSession = useCallback(() => {
+        // A fresh session closes the right-hand code panel too.
+        setCodeArtifact(null)
+        lastAutoOpenedTurnRef.current = null
         // Operator mode: clear the operator workspace (hide, not delete) and stop
         // any running task so the next goal starts fresh.
         if (operatorMode) {
@@ -1041,6 +1096,10 @@ export function App(): React.JSX.Element {
 
     const onOpenSession = useCallback(
         (id: string) => {
+            // Opening a chat must leave any open panel (Settings / Instructions),
+            // otherwise the selected conversation stays hidden behind it.
+            setShowSettings(false)
+            setShowInstructions(false)
             // Keep the sidebar open on wide layouts (it's a persistent pane); only
             // auto-close on the narrow/mobile overlay where it covers the chat.
             if (window.innerWidth <= 600) setNavOpen(false)
@@ -1105,7 +1164,7 @@ export function App(): React.JSX.Element {
                         .catch(() => undefined)
                 }
                 // Deleting the chat currently on screen clears the operator view
-                // (the copilot view is cleared by main via session:state).
+                // and the right-hand code panel.
                 if (deletingOpen) {
                     void op?.stopSession?.().catch(() => undefined)
                     setOpState(initialConversationState([]))
@@ -1113,6 +1172,8 @@ export function App(): React.JSX.Element {
                     setOpActiveMode(null)
                     setOpenSessionId(null)
                     setOpSteps([])
+                    setCodeArtifact(null)
+                    lastAutoOpenedTurnRef.current = null
                 }
                 return
             }
@@ -1120,7 +1181,16 @@ export function App(): React.JSX.Element {
             if (bridge && typeof bridge.deleteSessions === 'function') {
                 void bridge.deleteSessions([id]).then(() => refreshHistory()).catch(() => undefined)
             }
-            if (deletingOpen) setOpenSessionId(null)
+            // Deleting the chat currently on screen clears the copilot view, its
+            // staged shots/summary, and the right-hand code panel.
+            if (deletingOpen) {
+                setOpenSessionId(null)
+                setState(initialConversationState([]))
+                setSummary(null)
+                setStaged([])
+                setCodeArtifact(null)
+                lastAutoOpenedTurnRef.current = null
+            }
         },
         [operatorMode, openSessionId, refreshHistory, refreshOpHistory]
     )
@@ -1132,600 +1202,615 @@ export function App(): React.JSX.Element {
     const shownHistory = operatorMode ? opHistory : history
 
     return (
-        <div className={`glass-app${navOpen ? '' : ' glass-app--navhidden'}`}>
-            <aside className={`glass-nav${navOpen ? ' glass-nav--open' : ''}`}>
-                <div className="glass-nav__top">
-                    <button
-                        type="button"
-                        className="glass-iconbtn glass-iconbtn--icon"
-                        onClick={() => setNavOpen(false)}
-                        aria-label="Collapse chats"
-                        title="Collapse chats"
-                    >
-                        <ChevronIcon open={true} />
-                    </button>
-                </div>
-                <div className="glass-nav__modes">
-                    <button
-                        type="button"
-                        className={`glass-modebtn${operatorMode ? ' glass-modebtn--on' : ''}`}
-                        onClick={() => setOperatorMode((v) => !v)}
-                        aria-pressed={operatorMode}
-                        title={
-                            operatorMode
-                                ? 'Computer or Browser Use is ON (autonomous agent). Click to switch back to Smart Copilot.'
-                                : 'Switch to Computer or Browser Use (an autonomous agent that controls the browser or your Mac).'
-                        }
-                    >
-                        Computer or Browser Use
-                    </button>
-                </div>
-                <div className="glass-nav__list">
-                    {shownHistory.length === 0 ? null : (
-                        groupHistoryByDate(shownHistory).map((group) => (
-                            <div className="glass-history__group" key={group.label}>
-                                <div className="glass-history__group-label">{group.label}</div>
-                                {group.items.map((item) => (
-                                    <button
-                                        type="button"
-                                        key={item.id}
-                                        className="glass-history__item"
-                                        onClick={() => onOpenSession(item.id)}
-                                        onContextMenu={(e) => onChatContextMenu(e, item.id)}
-                                    >
-                                        <span className="glass-history__text">
-                                            <span className="glass-history__item-title">
-                                                {item.title}
-                                            </span>
-                                        </span>
-                                    </button>
-                                ))}
-                            </div>
-                        ))
-                    )}
-                </div>
-            </aside>
-
-            {navOpen && <div className="glass-nav__scrim" onClick={() => setNavOpen(false)} />}
-
-            {menu && (
-                <>
-                    <div className="glass-ctx-backdrop" onClick={() => setMenu(null)} />
-                    <div className="glass-ctx" style={{ left: menu.x, top: menu.y }}>
+        <CodePanelContext.Provider value={codePanelApi}>
+            <div className={`glass-app${navOpen ? '' : ' glass-app--navhidden'}${codeArtifact ? ' glass-app--codeopen' : ''}`}>
+                <aside className={`glass-nav${navOpen ? ' glass-nav--open' : ''}`}>
+                    <div className="glass-nav__top">
                         <button
                             type="button"
-                            className="glass-ctx__item glass-ctx__item--danger"
-                            onClick={() => deleteOne(menu.id)}
+                            className="glass-iconbtn glass-iconbtn--icon"
+                            onClick={() => setNavOpen(false)}
+                            aria-label="Collapse chats"
+                            title="Collapse chats"
                         >
-                            Delete
+                            <ChevronIcon open={true} />
                         </button>
                     </div>
-                </>
-            )}
-
-            <div className="glass-main">
-                <header className="glass-header">
-                    {!navOpen && (
+                    <div className="glass-nav__modes">
                         <button
                             type="button"
-                            className="glass-iconbtn glass-iconbtn--icon glass-header__lead"
-                            onClick={() => setNavOpen(true)}
-                            aria-label="Show chats"
-                            title="Show chats"
-                        >
-                            <ChevronIcon open={false} />
-                        </button>
-                    )}
-                    <div className="glass-header__actions">
-                        {operatorMode && (
-                            <>
-                                <HeaderSelect
-                                    ariaLabel="Environment"
-                                    title="Where the operator acts"
-                                    value={opEnvironment}
-                                    onChange={(v) => setOpEnvironment(v as typeof opEnvironment)}
-                                    options={[
-                                        { value: 'browser', label: 'Browser Use (Sandboxed browser)' },
-                                        { value: 'local', label: 'Compute Use (My Mac)' }
-                                    ]}
-                                />
-                                <HeaderSelect
-                                    ariaLabel="Autonomy"
-                                    title="How much the operator may do on its own"
-                                    value={opAutonomy}
-                                    onChange={(v) => setOpAutonomy(v as typeof opAutonomy)}
-                                    options={[
-                                        { value: 'autonomous', label: 'Autonomous' },
-                                        { value: 'manual', label: 'Manual' }
-                                    ]}
-                                />
-                                <input
-                                    className="glass-select glass-select--budget"
-                                    type="number"
-                                    min={1}
-                                    aria-label="Step budget"
-                                    title="Maximum operator steps"
-                                    value={opStepBudget}
-                                    onChange={(e) => setOpStepBudget(e.target.value)}
-                                />
-                            </>
-                        )}
-                        <button
-                            type="button"
-                            className={`glass-iconbtn glass-iconbtn--icon${pinned ? ' glass-iconbtn--on' : ''}`}
-                            onClick={togglePin}
-                            aria-pressed={pinned}
-                            aria-label={pinned ? 'Window stays on top: on' : 'Window stays on top: off'}
+                            className={`glass-modebtn${operatorMode ? ' glass-modebtn--on' : ''}`}
+                            onClick={() => setOperatorMode((v) => !v)}
+                            aria-pressed={operatorMode}
                             title={
-                                pinned
-                                    ? 'Keep window on top: ON (click to let it go behind others)'
-                                    : 'Keep window on top: OFF (click to float above all windows)'
+                                operatorMode
+                                    ? 'Computer or Browser Use is ON (autonomous agent). Click to switch back to Smart Copilot.'
+                                    : 'Switch to Computer or Browser Use (an autonomous agent that controls the browser or your Mac).'
                             }
                         >
-                            <PinIcon />
+                            Computer or Browser Use
                         </button>
-                        <button
-                            type="button"
-                            className="glass-iconbtn"
-                            onClick={onNewSession}
-                            title={operatorMode ? 'Start a new operator task' : 'Start a new chat'}
-                        >
-                            New
-                        </button>
-                        {!operatorMode && (
+                    </div>
+                    <div className="glass-nav__list">
+                        {shownHistory.length === 0 ? null : (
+                            groupHistoryByDate(shownHistory).map((group) => (
+                                <div className="glass-history__group" key={group.label}>
+                                    <div className="glass-history__group-label">{group.label}</div>
+                                    {group.items.map((item) => (
+                                        <button
+                                            type="button"
+                                            key={item.id}
+                                            className="glass-history__item"
+                                            onClick={() => onOpenSession(item.id)}
+                                            onContextMenu={(e) => onChatContextMenu(e, item.id)}
+                                        >
+                                            <span className="glass-history__text">
+                                                <span className="glass-history__item-title">
+                                                    {item.title}
+                                                </span>
+                                            </span>
+                                        </button>
+                                    ))}
+                                </div>
+                            ))
+                        )}
+                    </div>
+                </aside>
+
+                {navOpen && <div className="glass-nav__scrim" onClick={() => setNavOpen(false)} />}
+
+                {menu && (
+                    <>
+                        <div className="glass-ctx-backdrop" onClick={() => setMenu(null)} />
+                        <div className="glass-ctx" style={{ left: menu.x, top: menu.y }}>
                             <button
                                 type="button"
-                                className="glass-iconbtn"
-                                onClick={toggleInstructions}
-                                title="Custom instructions the copilot follows every reply"
+                                className="glass-ctx__item glass-ctx__item--danger"
+                                onClick={() => deleteOne(menu.id)}
                             >
-                                Instructions
+                                Delete
+                            </button>
+                        </div>
+                    </>
+                )}
+
+                <div className="glass-main">
+                    <header className="glass-header">
+                        {!navOpen && (
+                            <button
+                                type="button"
+                                className="glass-iconbtn glass-iconbtn--icon glass-header__lead"
+                                onClick={() => setNavOpen(true)}
+                                aria-label="Show chats"
+                                title="Show chats"
+                            >
+                                <ChevronIcon open={false} />
                             </button>
                         )}
-                        <button
-                            type="button"
-                            className="glass-iconbtn"
-                            onClick={toggleSettings}
-                            title="Settings: API keys, models, and preferences"
-                        >
-                            Settings
-                        </button>
-                    </div>
-                </header>
-
-                {showSettings ? (
-                    <div className="glass-panel">
-                        <div className="glass-settings__scroll">
-                            <Settings />
-                        </div>
-                    </div>
-                ) : showInstructions ? (
-                    <div className="glass-panel">
-                        <div className="glass-history__bar">
-                            <span className="glass-history__title">How to use Smart Copilot</span>
+                        <div className="glass-header__actions">
+                            {operatorMode && (
+                                <>
+                                    <HeaderSelect
+                                        ariaLabel="Environment"
+                                        title="Where the operator acts"
+                                        value={opEnvironment}
+                                        onChange={(v) => setOpEnvironment(v as typeof opEnvironment)}
+                                        options={[
+                                            { value: 'browser', label: 'Browser Use (Sandboxed browser)' },
+                                            { value: 'local', label: 'Compute Use (My Mac)' }
+                                        ]}
+                                    />
+                                    <HeaderSelect
+                                        ariaLabel="Autonomy"
+                                        title="How much the operator may do on its own"
+                                        value={opAutonomy}
+                                        onChange={(v) => setOpAutonomy(v as typeof opAutonomy)}
+                                        options={[
+                                            { value: 'autonomous', label: 'Autonomous' },
+                                            { value: 'manual', label: 'Manual' }
+                                        ]}
+                                    />
+                                    <input
+                                        className="glass-select glass-select--budget"
+                                        type="number"
+                                        min={1}
+                                        aria-label="Step budget"
+                                        title="Maximum operator steps"
+                                        value={opStepBudget}
+                                        onChange={(e) => setOpStepBudget(e.target.value)}
+                                    />
+                                </>
+                            )}
+                            <button
+                                type="button"
+                                className={`glass-iconbtn glass-iconbtn--icon${pinned ? ' glass-iconbtn--on' : ''}`}
+                                onClick={togglePin}
+                                aria-pressed={pinned}
+                                aria-label={pinned ? 'Window stays on top: on' : 'Window stays on top: off'}
+                                title={
+                                    pinned
+                                        ? 'Keep window on top: ON (click to let it go behind others)'
+                                        : 'Keep window on top: OFF (click to float above all windows)'
+                                }
+                            >
+                                <PinIcon />
+                            </button>
                             <button
                                 type="button"
                                 className="glass-iconbtn"
-                                onClick={() => setShowInstructions(false)}
+                                onClick={onNewSession}
+                                title={operatorMode ? 'Start a new operator task' : 'Start a new chat'}
                             >
-                                Close
+                                New
+                            </button>
+                            {!operatorMode && (
+                                <button
+                                    type="button"
+                                    className="glass-iconbtn"
+                                    onClick={toggleInstructions}
+                                    title="Custom instructions the copilot follows every reply"
+                                >
+                                    Instructions
+                                </button>
+                            )}
+                            <button
+                                type="button"
+                                className="glass-iconbtn"
+                                onClick={toggleSettings}
+                                title="Settings: API keys, models, and preferences"
+                            >
+                                Settings
                             </button>
                         </div>
-                        <div className="glass-settings__scroll">
-                            <ol className="glass-onboard">
-                                <li>Open Settings and add your gateway (URL, model, key), or a free key.</li>
-                                <li>Take a screenshot with macOS (⌘⇧4 region, ⌘⇧3 full, or ⌘⇧5) to the clipboard, then paste it here with ⌘V. You can also drag an image in or use the paperclip.</li>
-                                <li>Ask about it, or just type a question. Smart Copilot remembers the whole conversation, so you never explain yourself twice.</li>
-                                <li>Type a command like "open youtube and play a song" and it switches to Computer or Browser Use to do it for you.</li>
-                            </ol>
-                        </div>
-                    </div>
-                ) : (
-                    <div className="glass-conversation" ref={conversationRef} aria-live="polite">
-                        {!operatorMode && summary && <GoalTracker summary={summary} />}
+                    </header>
 
-                        {conv.turns.map((turn) => (
-                            <div
-                                key={turn.id}
-                                className={[
-                                    'glass-row',
-                                    turn.role === 'user' ? 'glass-row--user' : 'glass-row--assistant',
-                                    turn.status === 'error' ? 'glass-row--error' : ''
-                                ]
-                                    .filter(Boolean)
-                                    .join(' ')}
-                            >
-                                <div className="glass-bubble">
-                                    {turn.captures && turn.captures.length > 0 && (
-                                        <div className="glass-shots">
-                                            {turn.captures.map((cap, ci) => (
-                                                <img
-                                                    key={ci}
-                                                    className="glass-thumb"
-                                                    src={cap.thumbnailUrl}
-                                                    alt={`Captured screen region ${ci + 1}`}
-                                                />
-                                            ))}
+                    {showSettings ? (
+                        <div className="glass-panel">
+                            <div className="glass-settings__scroll">
+                                <Settings />
+                            </div>
+                        </div>
+                    ) : showInstructions ? (
+                        <div className="glass-panel">
+                            <div className="glass-history__bar">
+                                <span className="glass-history__title">How to use Smart Copilot</span>
+                                <button
+                                    type="button"
+                                    className="glass-iconbtn"
+                                    onClick={() => setShowInstructions(false)}
+                                >
+                                    Close
+                                </button>
+                            </div>
+                            <div className="glass-settings__scroll">
+                                <ol className="glass-onboard">
+                                    <li>Open Settings and add your gateway (URL, model, key), or a free key.</li>
+                                    <li>Take a screenshot with macOS (⌘⇧4 region, ⌘⇧3 full, or ⌘⇧5) to the clipboard, then paste it here with ⌘V. You can also drag an image in or use the paperclip.</li>
+                                    <li>Ask about it, or just type a question. Smart Copilot remembers the whole conversation, so you never explain yourself twice.</li>
+                                    <li>Type a command like "open youtube and play a song" and it switches to Computer or Browser Use to do it for you.</li>
+                                </ol>
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="glass-conversation" ref={conversationRef} aria-live="polite">
+                            {!operatorMode && summary && <GoalTracker summary={summary} />}
+
+                            {conv.turns.map((turn) => (
+                                <div
+                                    key={turn.id}
+                                    className={[
+                                        'glass-row',
+                                        turn.role === 'user' ? 'glass-row--user' : 'glass-row--assistant',
+                                        turn.status === 'error' ? 'glass-row--error' : ''
+                                    ]
+                                        .filter(Boolean)
+                                        .join(' ')}
+                                >
+                                    <div className="glass-bubble">
+                                        {turn.captures && turn.captures.length > 0 && (
+                                            <div className="glass-shots">
+                                                {turn.captures.map((cap, ci) => (
+                                                    <img
+                                                        key={ci}
+                                                        className="glass-thumb"
+                                                        src={cap.thumbnailUrl}
+                                                        alt={`Captured screen region ${ci + 1}`}
+                                                    />
+                                                ))}
+                                            </div>
+                                        )}
+                                        {turn.capture?.thumbnailUrl && (
+                                            <img
+                                                className="glass-thumb"
+                                                src={turn.capture.thumbnailUrl}
+                                                alt="Captured screen region"
+                                            />
+                                        )}
+                                        {turn.text && <TurnBody turn={turn} />}
+                                    </div>
+                                </div>
+                            ))}
+
+                            {/* Operator steps: a bordered checklist (tick per done
+                            step, a spinner trailing while the agent works). */}
+                            {operatorMode && (opSteps.length > 0 || conv.pending) && (
+                                <div className="glass-steps" role="list" aria-label="Operator steps">
+                                    {opSteps.map((s) => (
+                                        <div
+                                            key={s.id}
+                                            role="listitem"
+                                            className={`glass-step${s.kind === 'failure' ? ' glass-step--error' : ''}`}
+                                        >
+                                            <span className="glass-step__icon">
+                                                <CheckIcon />
+                                            </span>
+                                            <span className="glass-step__text">
+                                                <span className="glass-step__label">{s.label}</span>
+                                                {s.sub && <span className="glass-step__sub">{s.sub}</span>}
+                                                {s.meta && <span className="glass-step__meta">{s.meta}</span>}
+                                            </span>
+                                        </div>
+                                    ))}
+                                    {conv.pending && (
+                                        <div className="glass-step glass-step--active" role="listitem">
+                                            <span className="glass-step__icon">
+                                                <span className="glass-spinner" aria-label="Working" />
+                                            </span>
+                                            <span className="glass-step__text">
+                                                <span className="glass-step__label">Working…</span>
+                                            </span>
                                         </div>
                                     )}
-                                    {turn.capture?.thumbnailUrl && (
-                                        <img
-                                            className="glass-thumb"
-                                            src={turn.capture.thumbnailUrl}
-                                            alt="Captured screen region"
-                                        />
+                                </div>
+                            )}
+
+                            {/* Copilot uses the classic three-dot thinking row. */}
+                            {conv.pending && !operatorMode && (
+                                <div className="glass-row glass-row--assistant">
+                                    <div className="glass-pending" role="status" aria-label="Glass is thinking">
+                                        <span className="glass-pending__dot" />
+                                        <span className="glass-pending__dot" />
+                                        <span className="glass-pending__dot" />
+                                        {downloadStatus && (
+                                            <span className="glass-pending__label">{downloadStatus}</span>
+                                        )}
+                                    </div>
+                                </div>
+                            )}
+
+                            {confirmation && (
+                                <div className="glass-confirm" role="alertdialog" aria-label="Confirm action">
+                                    <div className="glass-confirm__title">
+                                        {confirmation.highRisk ? 'Confirm high-risk action' : 'Confirm action'}
+                                    </div>
+                                    <div className="glass-confirm__action">
+                                        {describeAction(confirmation.action)}
+                                    </div>
+                                    {confirmation.rationale.trim().length > 0 && (
+                                        <div className="glass-confirm__why">{confirmation.rationale}</div>
                                     )}
-                                    {turn.text && <TurnBody turn={turn} />}
-                                </div>
-                            </div>
-                        ))}
-
-                        {/* Operator steps: a bordered checklist (tick per done
-                            step, a spinner trailing while the agent works). */}
-                        {operatorMode && (opSteps.length > 0 || conv.pending) && (
-                            <div className="glass-steps" role="list" aria-label="Operator steps">
-                                {opSteps.map((s) => (
-                                    <div
-                                        key={s.id}
-                                        role="listitem"
-                                        className={`glass-step${s.kind === 'failure' ? ' glass-step--error' : ''}`}
-                                    >
-                                        <span className="glass-step__icon">
-                                            <CheckIcon />
-                                        </span>
-                                        <span className="glass-step__text">
-                                            <span className="glass-step__label">{s.label}</span>
-                                            {s.sub && <span className="glass-step__sub">{s.sub}</span>}
-                                            {s.meta && <span className="glass-step__meta">{s.meta}</span>}
-                                        </span>
+                                    <div className="glass-confirm__buttons">
+                                        <button
+                                            type="button"
+                                            className="glass-confirm__btn glass-confirm__btn--approve"
+                                            onClick={() => decideConfirmation(true)}
+                                        >
+                                            Approve
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className="glass-confirm__btn glass-confirm__btn--decline"
+                                            onClick={() => decideConfirmation(false)}
+                                        >
+                                            Decline
+                                        </button>
                                     </div>
-                                ))}
-                                {conv.pending && (
-                                    <div className="glass-step glass-step--active" role="listitem">
-                                        <span className="glass-step__icon">
-                                            <span className="glass-spinner" aria-label="Working" />
-                                        </span>
-                                        <span className="glass-step__text">
-                                            <span className="glass-step__label">Working…</span>
-                                        </span>
-                                    </div>
-                                )}
-                            </div>
-                        )}
+                                </div>
+                            )}
 
-                        {/* Copilot uses the classic three-dot thinking row. */}
-                        {conv.pending && !operatorMode && (
-                            <div className="glass-row glass-row--assistant">
-                                <div className="glass-pending" role="status" aria-label="Glass is thinking">
-                                    <span className="glass-pending__dot" />
-                                    <span className="glass-pending__dot" />
-                                    <span className="glass-pending__dot" />
-                                </div>
-                            </div>
-                        )}
-
-                        {confirmation && (
-                            <div className="glass-confirm" role="alertdialog" aria-label="Confirm action">
-                                <div className="glass-confirm__title">
-                                    {confirmation.highRisk ? 'Confirm high-risk action' : 'Confirm action'}
-                                </div>
-                                <div className="glass-confirm__action">
-                                    {describeAction(confirmation.action)}
-                                </div>
-                                {confirmation.rationale.trim().length > 0 && (
-                                    <div className="glass-confirm__why">{confirmation.rationale}</div>
-                                )}
-                                <div className="glass-confirm__buttons">
+                            {conv.error && (
+                                <div className="glass-error" role="alert">
+                                    <span className="glass-error__text">{conv.error.message}</span>
                                     <button
                                         type="button"
-                                        className="glass-confirm__btn glass-confirm__btn--approve"
-                                        onClick={() => decideConfirmation(true)}
+                                        className="glass-error__dismiss"
+                                        onClick={() => setConv((s) => clearError(s))}
+                                        aria-label="Dismiss error"
                                     >
-                                        Approve
-                                    </button>
-                                    <button
-                                        type="button"
-                                        className="glass-confirm__btn glass-confirm__btn--decline"
-                                        onClick={() => decideConfirmation(false)}
-                                    >
-                                        Decline
+                                        ✕
                                     </button>
                                 </div>
-                            </div>
-                        )}
-
-                        {conv.error && (
-                            <div className="glass-error" role="alert">
-                                <span className="glass-error__text">{conv.error.message}</span>
-                                <button
-                                    type="button"
-                                    className="glass-error__dismiss"
-                                    onClick={() => setConv((s) => clearError(s))}
-                                    aria-label="Dismiss error"
-                                >
-                                    ✕
-                                </button>
-                            </div>
-                        )}
-                    </div>
-                )}
-
-                {staged.length > 0 && (
-                    <div className="glass-carousel" aria-label="Staged screenshots">
-                        {staged.map((shot) => (
-                            <div className="glass-shot" key={shot.id}>
-                                <button
-                                    type="button"
-                                    className="glass-shot__remove"
-                                    onClick={() => removeStaged(shot.id)}
-                                    aria-label={`Remove ${shot.name}`}
-                                    title="Remove"
-                                >
-                                    ×
-                                </button>
-                                <div className="glass-shot__thumb">
-                                    <img
-                                        src={shot.capture.thumbnailUrl}
-                                        alt={shot.name}
-                                        draggable={false}
-                                    />
-                                </div>
-                                <div className="glass-shot__name">{finderName(shot.name)}</div>
-                            </div>
-                        ))}
-                    </div>
-                )}
-
-                <div className="glass-composer">
-                    <div className="glass-composer__top">
-                        <div className="glass-composer__text">
-                            <textarea
-                                ref={inputRef}
-                                className="glass-input"
-                                placeholder={
-                                    dictation.listening
-                                        ? 'Listening…'
-                                        : operatorMode
-                                            ? 'Describe a task for Computer or Browser Use…'
-                                            : 'Message Smart Copilot…'
-                                }
-                                value={draft}
-                                onChange={(e) => setDraft(e.target.value)}
-                                onKeyDown={onKeyDown}
-                                readOnly={dictation.listening}
-                                rows={1}
-                                aria-label="Message Smart Copilot"
-                            />
+                            )}
                         </div>
-                        {operatorMode && (
-                            <div className="glass-composer__status">
-                                <div
-                                    className="glass-status-pill"
-                                    title="Active model, live. Updates as the fallback chain shifts. API = acting via the page's structure; Vision = reading pixels."
-                                >
-                                    <span
-                                        className={`glass-status-pill__dot glass-status-pill__dot--${opActiveMode ?? 'idle'}`}
-                                    />
-                                    <span className="glass-status-pill__text">
-                                        {opActiveProvider ? friendlyProvider(opActiveProvider) : 'Auto'}
-                                        {opActiveMode ? ` · ${opActiveMode === 'api' ? 'API' : 'Vision'}` : ''}
-                                    </span>
-                                </div>
-                                {opState.pending && (
+                    )}
+
+                    {!showSettings && !showInstructions && staged.length > 0 && (
+                        <div className="glass-carousel" aria-label="Staged screenshots">
+                            {staged.map((shot) => (
+                                <div className="glass-shot" key={shot.id}>
                                     <button
                                         type="button"
-                                        className="glass-cancel-pill"
-                                        onClick={onCancelOperator}
-                                        title="Stop the running task so you can change settings and start again"
+                                        className="glass-shot__remove"
+                                        onClick={() => removeStaged(shot.id)}
+                                        aria-label={`Remove ${shot.name}`}
+                                        title="Remove"
                                     >
-                                        <StopIcon />
-                                        <span>Cancel</span>
+                                        ×
                                     </button>
-                                )}
-                            </div>
-                        )}
-                    </div>
-                    <div className="glass-composer__bar">
-                        <div className="glass-composer__left">
-                            <button
-                                type="button"
-                                className="glass-addfile"
-                                onClick={() => addFileRef.current?.click()}
-                                aria-label="Add image files"
-                                title="Attach images or a PDF"
-                            >
-                                <PaperclipIcon />
-                            </button>
-                            <input
-                                ref={addFileRef}
-                                type="file"
-                                accept="image/*,application/pdf,.pdf"
-                                multiple
-                                className="glass-file-input"
-                                onChange={(e) => {
-                                    onAddFiles(e.target.files)
-                                    e.target.value = ''
-                                }}
-                            />
-                        </div>
-                        <div className="glass-composer__actions">
-                            <div className="glass-model-wrap">
-                                {showModels && (
-                                    <>
-                                        <div
-                                            className="glass-model-backdrop"
-                                            onClick={() => setShowModels(false)}
+                                    <div className="glass-shot__thumb">
+                                        <img
+                                            src={shot.capture.thumbnailUrl}
+                                            alt={shot.name}
+                                            draggable={false}
                                         />
-                                        <div className="glass-model-menu" role="menu">
-                                            {curated.recommended.length === 0 &&
-                                                curated.others.length === 0 ? (
-                                                <div className="glass-model-empty">No models found</div>
-                                            ) : (
-                                                <>
-                                                    {curated.recommended.length > 0 && (
-                                                        <div className="glass-model-section">
-                                                            Recommended
-                                                        </div>
-                                                    )}
-                                                    {curated.recommended.map((m) => (
-                                                        <button
-                                                            type="button"
-                                                            key={m.id}
-                                                            className={`glass-model-item${m.id === currentModel ? ' glass-model-item--on' : ''}`}
-                                                            onClick={() => selectModel(m.id)}
-                                                            title={m.id}
-                                                        >
-                                                            <span className="glass-model-item__check">
-                                                                {m.id === currentModel ? <CheckIcon /> : null}
-                                                            </span>
-                                                            <span className="glass-model-item__text">
-                                                                <span className="glass-model-item__name">{m.label}</span>
-                                                                {m.sublabel && (
-                                                                    <span className="glass-model-item__sub">
-                                                                        ({m.sublabel})
+                                    </div>
+                                    <div className="glass-shot__name">{finderName(shot.name)}</div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+
+                    {!showSettings && !showInstructions && (
+                        <div className="glass-composer">
+                            <div className="glass-composer__top">
+                                <div className="glass-composer__text">
+                                    <textarea
+                                        ref={inputRef}
+                                        className="glass-input"
+                                        placeholder={
+                                            dictation.listening
+                                                ? 'Listening…'
+                                                : operatorMode
+                                                    ? 'Describe a task for Computer or Browser Use…'
+                                                    : 'Message Smart Copilot…'
+                                        }
+                                        value={draft}
+                                        onChange={(e) => setDraft(e.target.value)}
+                                        onKeyDown={onKeyDown}
+                                        readOnly={dictation.listening}
+                                        rows={1}
+                                        aria-label="Message Smart Copilot"
+                                    />
+                                </div>
+                                {operatorMode && (
+                                    <div className="glass-composer__status">
+                                        <div
+                                            className="glass-status-pill"
+                                            title="Active model, live. Updates as the fallback chain shifts. API = acting via the page's structure; Vision = reading pixels."
+                                        >
+                                            <span
+                                                className={`glass-status-pill__dot glass-status-pill__dot--${opActiveMode ?? 'idle'}`}
+                                            />
+                                            <span className="glass-status-pill__text">
+                                                {opActiveProvider ? friendlyProvider(opActiveProvider) : 'Auto'}
+                                                {opActiveMode ? ` · ${opActiveMode === 'api' ? 'API' : 'Vision'}` : ''}
+                                            </span>
+                                        </div>
+                                        {opState.pending && (
+                                            <button
+                                                type="button"
+                                                className="glass-cancel-pill"
+                                                onClick={onCancelOperator}
+                                                title="Stop the running task so you can change settings and start again"
+                                            >
+                                                <StopIcon />
+                                                <span>Cancel</span>
+                                            </button>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                            <div className="glass-composer__bar">
+                                <div className="glass-composer__left">
+                                    <button
+                                        type="button"
+                                        className="glass-addfile"
+                                        onClick={() => addFileRef.current?.click()}
+                                        aria-label="Add image files"
+                                        title="Attach images or a PDF"
+                                    >
+                                        <PaperclipIcon />
+                                    </button>
+                                    <input
+                                        ref={addFileRef}
+                                        type="file"
+                                        accept="image/*,application/pdf,.pdf"
+                                        multiple
+                                        className="glass-file-input"
+                                        onChange={(e) => {
+                                            onAddFiles(e.target.files)
+                                            e.target.value = ''
+                                        }}
+                                    />
+                                </div>
+                                <div className="glass-composer__actions">
+                                    <div className="glass-model-wrap">
+                                        {showModels && (
+                                            <>
+                                                <div
+                                                    className="glass-model-backdrop"
+                                                    onClick={() => setShowModels(false)}
+                                                />
+                                                <div className="glass-model-menu" role="menu">
+                                                    {curated.recommended.length === 0 &&
+                                                        curated.others.length === 0 ? (
+                                                        <div className="glass-model-empty">No models found</div>
+                                                    ) : (
+                                                        <>
+                                                            {curated.recommended.length > 0 && (
+                                                                <div className="glass-model-section">
+                                                                    Recommended
+                                                                </div>
+                                                            )}
+                                                            {curated.recommended.map((m) => (
+                                                                <button
+                                                                    type="button"
+                                                                    key={m.id}
+                                                                    className={`glass-model-item${m.id === currentModel ? ' glass-model-item--on' : ''}`}
+                                                                    onClick={() => selectModel(m.id)}
+                                                                    title={m.id}
+                                                                >
+                                                                    <span className="glass-model-item__check">
+                                                                        {m.id === currentModel ? <CheckIcon /> : null}
                                                                     </span>
-                                                                )}
-                                                            </span>
-                                                        </button>
-                                                    ))}
+                                                                    <span className="glass-model-item__text">
+                                                                        <span className="glass-model-item__name">{m.label}</span>
+                                                                        {m.sublabel && (
+                                                                            <span className="glass-model-item__sub">
+                                                                                ({m.sublabel})
+                                                                            </span>
+                                                                        )}
+                                                                    </span>
+                                                                </button>
+                                                            ))}
 
-                                                    {curated.others.length > 0 && (
-                                                        <button
-                                                            type="button"
-                                                            className="glass-model-toggle"
-                                                            onClick={() => setShowAllModels((v) => !v)}
-                                                        >
-                                                            <CaretIcon open={showAllModels} />
-                                                            {showAllModels
-                                                                ? 'Hide other models'
-                                                                : `Show all models (${curated.others.length})`}
-                                                        </button>
+                                                            {curated.others.length > 0 && (
+                                                                <button
+                                                                    type="button"
+                                                                    className="glass-model-toggle"
+                                                                    onClick={() => setShowAllModels((v) => !v)}
+                                                                >
+                                                                    <CaretIcon open={showAllModels} />
+                                                                    {showAllModels
+                                                                        ? 'Hide other models'
+                                                                        : `Show all models (${curated.others.length})`}
+                                                                </button>
+                                                            )}
+
+                                                            {showAllModels &&
+                                                                curated.others.map((m) => (
+                                                                    <button
+                                                                        type="button"
+                                                                        key={m.id}
+                                                                        className={`glass-model-item${m.id === currentModel ? ' glass-model-item--on' : ''}`}
+                                                                        onClick={() => selectModel(m.id)}
+                                                                        title={m.id}
+                                                                    >
+                                                                        <span className="glass-model-item__check">
+                                                                            {m.id === currentModel ? (
+                                                                                <CheckIcon />
+                                                                            ) : null}
+                                                                        </span>
+                                                                        <span className="glass-model-item__text">
+                                                                            <span className="glass-model-item__name">{m.label}</span>
+                                                                            {m.sublabel && (
+                                                                                <span className="glass-model-item__sub">
+                                                                                    ({m.sublabel})
+                                                                                </span>
+                                                                            )}
+                                                                        </span>
+                                                                    </button>
+                                                                ))}
+                                                        </>
                                                     )}
-
-                                                    {showAllModels &&
-                                                        curated.others.map((m) => (
+                                                </div>
+                                            </>
+                                        )}
+                                        <button
+                                            type="button"
+                                            className="glass-model"
+                                            onClick={openModels}
+                                            title={currentModel ? `Model: ${currentModel}` : 'Choose model'}
+                                            aria-label="Choose model"
+                                        >
+                                            <span className="glass-model__name">
+                                                {currentModel ? friendlyLabel(currentModel) : 'Model'}
+                                            </span>
+                                            <CaretIcon open={showModels} />
+                                        </button>
+                                    </div>
+                                    {dictation.supported && (
+                                        <div
+                                            className={`glass-voicepill${voiceOpen ? ' glass-voicepill--open' : ''}`}
+                                            role="group"
+                                            aria-label="Voice"
+                                        >
+                                            {voiceOpen && (
+                                                <>
+                                                    <div
+                                                        className="glass-model-backdrop"
+                                                        onClick={() => setVoiceOpen(false)}
+                                                    />
+                                                    <div className="glass-voice-menu" role="menu">
+                                                        {VOICE_VERSIONS.map(({ value, label, sub, title }) => (
                                                             <button
                                                                 type="button"
-                                                                key={m.id}
-                                                                className={`glass-model-item${m.id === currentModel ? ' glass-model-item--on' : ''}`}
-                                                                onClick={() => selectModel(m.id)}
-                                                                title={m.id}
+                                                                key={value}
+                                                                className={`glass-model-item${voiceVer === value ? ' glass-model-item--on' : ''}`}
+                                                                onClick={() => {
+                                                                    // Stop the current (possibly stuck)
+                                                                    // engine before switching.
+                                                                    cancelActive()
+                                                                    setVoiceVer(value)
+                                                                    setVoiceOpen(false)
+                                                                }}
+                                                                title={title}
                                                             >
                                                                 <span className="glass-model-item__check">
-                                                                    {m.id === currentModel ? (
-                                                                        <CheckIcon />
-                                                                    ) : null}
+                                                                    {voiceVer === value ? <CheckIcon /> : null}
                                                                 </span>
                                                                 <span className="glass-model-item__text">
-                                                                    <span className="glass-model-item__name">{m.label}</span>
-                                                                    {m.sublabel && (
-                                                                        <span className="glass-model-item__sub">
-                                                                            ({m.sublabel})
-                                                                        </span>
-                                                                    )}
+                                                                    <span className="glass-model-item__name">{label}</span>
+                                                                    <span className="glass-model-item__sub">({sub})</span>
                                                                 </span>
                                                             </button>
                                                         ))}
+                                                    </div>
                                                 </>
                                             )}
+                                            <button
+                                                type="button"
+                                                className={`glass-voicepill__mic${dictation.listening || dictation.transcribing ? ' glass-voicepill__mic--on' : ''}`}
+                                                onClick={dictation.toggle}
+                                                disabled={dictation.transcribing}
+                                                aria-label={dictation.listening ? 'Stop dictation' : 'Dictate'}
+                                                aria-pressed={dictation.listening}
+                                                title={
+                                                    dictation.transcribing
+                                                        ? 'Transcribing your speech…'
+                                                        : dictation.listening
+                                                            ? 'Stop dictation'
+                                                            : 'Dictate: speak instead of typing'
+                                                }
+                                            >
+                                                <VoiceBars active={dictation.listening} />
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className="glass-voicepill__caret"
+                                                onClick={() => setVoiceOpen((v) => !v)}
+                                                title="Choose voice engine (V1 reliable / V2 fast)"
+                                                aria-label="Choose voice engine"
+                                            >
+                                                <CaretIcon open={voiceOpen} />
+                                            </button>
                                         </div>
-                                    </>
-                                )}
-                                <button
-                                    type="button"
-                                    className="glass-model"
-                                    onClick={openModels}
-                                    title={currentModel ? `Model: ${currentModel}` : 'Choose model'}
-                                    aria-label="Choose model"
-                                >
-                                    <span className="glass-model__name">
-                                        {currentModel ? friendlyLabel(currentModel) : 'Model'}
-                                    </span>
-                                    <CaretIcon open={showModels} />
-                                </button>
-                            </div>
-                            {dictation.supported && (
-                                <div
-                                    className={`glass-voicepill${voiceOpen ? ' glass-voicepill--open' : ''}`}
-                                    role="group"
-                                    aria-label="Voice"
-                                >
-                                    {voiceOpen && (
-                                        <>
-                                            <div
-                                                className="glass-model-backdrop"
-                                                onClick={() => setVoiceOpen(false)}
-                                            />
-                                            <div className="glass-voice-menu" role="menu">
-                                                {VOICE_VERSIONS.map(({ value, label, sub, title }) => (
-                                                    <button
-                                                        type="button"
-                                                        key={value}
-                                                        className={`glass-model-item${voiceVer === value ? ' glass-model-item--on' : ''}`}
-                                                        onClick={() => {
-                                                            // Stop the current (possibly stuck)
-                                                            // engine before switching.
-                                                            cancelActive()
-                                                            setVoiceVer(value)
-                                                            setVoiceOpen(false)
-                                                        }}
-                                                        title={title}
-                                                    >
-                                                        <span className="glass-model-item__check">
-                                                            {voiceVer === value ? <CheckIcon /> : null}
-                                                        </span>
-                                                        <span className="glass-model-item__text">
-                                                            <span className="glass-model-item__name">{label}</span>
-                                                            <span className="glass-model-item__sub">({sub})</span>
-                                                        </span>
-                                                    </button>
-                                                ))}
-                                            </div>
-                                        </>
                                     )}
-                                    <button
-                                        type="button"
-                                        className={`glass-voicepill__mic${dictation.listening || dictation.transcribing ? ' glass-voicepill__mic--on' : ''}`}
-                                        onClick={dictation.toggle}
-                                        disabled={dictation.transcribing}
-                                        aria-label={dictation.listening ? 'Stop dictation' : 'Dictate'}
-                                        aria-pressed={dictation.listening}
-                                        title={
-                                            dictation.transcribing
-                                                ? 'Transcribing your speech…'
-                                                : dictation.listening
-                                                    ? 'Stop dictation'
-                                                    : 'Dictate: speak instead of typing'
-                                        }
-                                    >
-                                        <VoiceBars active={dictation.listening} />
-                                    </button>
-                                    <button
-                                        type="button"
-                                        className="glass-voicepill__caret"
-                                        onClick={() => setVoiceOpen((v) => !v)}
-                                        title="Choose voice engine (V1 reliable / V2 fast)"
-                                        aria-label="Choose voice engine"
-                                    >
-                                        <CaretIcon open={voiceOpen} />
-                                    </button>
+                                    {(isSubmittable(draft) || staged.length > 0) && (
+                                        <button
+                                            type="button"
+                                            className="glass-send"
+                                            onClick={submit}
+                                            aria-label="Send message"
+                                            title="Send"
+                                        >
+                                            <SendIcon />
+                                        </button>
+                                    )}
                                 </div>
-                            )}
-                            {(isSubmittable(draft) || staged.length > 0) && (
-                                <button
-                                    type="button"
-                                    className="glass-send"
-                                    onClick={submit}
-                                    aria-label="Send message"
-                                    title="Send"
-                                >
-                                    <SendIcon />
-                                </button>
-                            )}
+                            </div>
                         </div>
-                    </div>
+                    )}
                 </div>
+                {codeArtifact && (
+                    <CodePanel
+                        artifact={codeArtifact}
+                        onClose={() => setCodeArtifact(null)}
+                        width={codePanelWidth}
+                        onResize={setCodePanelWidth}
+                    />
+                )}
             </div>
-        </div>
+        </CodePanelContext.Provider>
     )
 }
