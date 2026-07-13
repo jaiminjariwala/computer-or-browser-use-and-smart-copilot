@@ -18,8 +18,10 @@
   "dependencies": {
     "@fontsource-variable/inter": "^5.2.8",
     "@huggingface/transformers": "^3.8.1",
+    "@monaco-editor/react": "^4.7.0",
     "@xenova/transformers": "^2.0.1",
     "framer-motion": "^11.18.2",
+    "monaco-editor": "^0.52.2",
     "openai": "^4.67.3",
     "pdfjs-dist": "^6.1.200",
     "playwright": "^1.61.1",
