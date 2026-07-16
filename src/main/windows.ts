@@ -23,9 +23,9 @@ import { join } from 'path'
  *   a rectangular region by dragging (enforced by the overlay renderer UI).
  */
 
-/** Default sidebar dimensions, in logical pixels. */
-export const SIDEBAR_WIDTH = 420
-export const SIDEBAR_HEIGHT = 640
+/** Default desktop workspace dimensions, in logical pixels. */
+export const SIDEBAR_WIDTH = 1040
+export const SIDEBAR_HEIGHT = 760
 
 /** Size of the floating pencil launcher window, in logical pixels. */
 export const PENCIL_SIZE = 72
@@ -50,8 +50,8 @@ export function createSidebarWindowOptions(
     return {
         width: SIDEBAR_WIDTH,
         height: SIDEBAR_HEIGHT,
-        minWidth: 320,
-        minHeight: 360,
+        minWidth: 680,
+        minHeight: 520,
         show: false,
         // Frameless persistent panel (Req 2.1).
         frame: false,

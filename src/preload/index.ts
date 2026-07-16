@@ -2,6 +2,8 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type {
     ConfigStatus,
     GatewayConfigInput,
+    GitHubAuthStatus,
+    GitHubDeviceChallenge,
     GlassBridge,
     GlassError,
     Rect,
@@ -57,8 +59,15 @@ const bridge: GlassBridge = {
     getConfigStatus: (): Promise<ConfigStatus> => ipcRenderer.invoke('config:get-status'),
     saveConfig: (cfg: GatewayConfigInput): Promise<void> => ipcRenderer.invoke('config:save', cfg),
     setPinned: (pinned: boolean): Promise<void> => ipcRenderer.invoke('window:set-pinned', pinned),
+    getGitHubAuthStatus: (): Promise<GitHubAuthStatus> =>
+        ipcRenderer.invoke('github-auth:status'),
+    startGitHubLogin: (): Promise<GitHubDeviceChallenge> =>
+        ipcRenderer.invoke('github-auth:start'),
+    logoutGitHub: (): Promise<void> => ipcRenderer.invoke('github-auth:logout'),
 
     // main -> Sidebar (event subscriptions)
+    onGitHubAuthChanged: (cb: (status: GitHubAuthStatus) => void): (() => void) =>
+        subscribe<[GitHubAuthStatus]>('github-auth:changed', cb),
     onTurnAppended: (cb: (turn: TurnView) => void): (() => void) =>
         subscribe<[TurnView]>('turn:appended', cb),
     onPending: (cb: (pending: boolean) => void): (() => void) =>

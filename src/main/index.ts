@@ -11,6 +11,7 @@ import {
     HOSTED_FALLBACKS,
     type HostedFallbackId
 } from './config'
+import { registerGitHubAuthIpc } from './github-auth'
 import {
     registerGlassIpc,
     emitError,
@@ -80,6 +81,7 @@ if (!gotSingleInstanceLock) {
 }
 let disposeOperatorIpc: (() => void) | null = null
 let disposeOperatorConfigIpc: (() => void) | null = null
+let disposeGitHubAuthIpc: (() => void) | null = null
 let flushOperatorSessions: (() => Promise<void>) | null = null
 
 /**
@@ -125,13 +127,13 @@ function createWindow(): void {
     }
 
     mainWindow = new BrowserWindow({
-        // Open in the narrow "mobile" layout by default (below the 600px CSS
-        // breakpoint), so the sidebar starts collapsed and the chat fills the
-        // width. The user can widen the window any time to get the wide layout.
-        width: 420,
-        height: 720,
-        minWidth: 360,
-        minHeight: 420,
+        // Desktop-first workspace: the ~300px chat rail stays visible beside a
+        // useful conversation canvas at launch. Narrow resizing still switches
+        // the rail to its responsive overlay behavior.
+        width: 1040,
+        height: 760,
+        minWidth: 680,
+        minHeight: 520,
         show: false,
         // Frameless floating panel: removes the native title bar (and its
         // centered title) while keeping the macOS traffic-light buttons.
@@ -188,11 +190,12 @@ app.whenReady().then(async () => {
         }
     }
 
-    // Allow microphone access for in-app voice dictation (speech-to-text in the
-    // chat composer and capture input). Only audio/media permissions are
-    // granted; everything else is denied by default.
-    session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
-        callback(permission === 'media')
+    // Allow camera/microphone only for the trusted sidebar renderer. Dictation
+    // requests audio; the local video recorder requests video and, when
+    // available, audio. Every other permission and renderer is denied.
+    session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
+        const trustedSidebar = mainWindow !== null && webContents === mainWindow.webContents
+        callback(permission === 'media' && trustedSidebar)
     })
 
     // Config / Credential Store IPC + prompt when credentials are missing.
@@ -204,6 +207,12 @@ app.whenReady().then(async () => {
         getSidebarWindow: () => mainWindow,
         onSaved: () => seedOperatorProviders()
     })
+
+    // GitHub uses OAuth Device Flow in the privileged main process. The public
+    // client id is build/runtime configuration; no client secret is bundled,
+    // and the encrypted access token never crosses the preload boundary.
+    const githubAuth = registerGitHubAuthIpc({ getSidebarWindow: () => mainWindow })
+    disposeGitHubAuthIpc = githubAuth.dispose
 
     // Persistent session store: writes the active session to
     // `userData/sessions/current.json` after each change and loads it on launch
@@ -458,10 +467,14 @@ app.whenReady().then(async () => {
         // pushes it to the sidebar so the view updates.
         onListSessions: () => sessionStore.listSessions(),
         onOpenSession: async (id) => {
+            const current = sessionManager.getSession()
+            // The renderer synthesizes the current in-memory session alongside
+            // archives. Its disk copy can be older, so selecting the live id is
+            // a no-op rather than a restore from stale persisted history.
+            if (current.id === id) return
             const chosen = await sessionStore.readSessionById(id)
             if (!chosen) return
-            const current = sessionManager.getSession()
-            if (current.turns.length > 0 && current.id !== chosen.id) {
+            if (current.turns.length > 0) {
                 await sessionStore.archive(current)
             }
             sessionManager.restore(chosen)
@@ -681,5 +694,6 @@ app.on('will-quit', () => {
     operatorHotkey?.unregister()
     disposeOperatorIpc?.()
     disposeOperatorConfigIpc?.()
+    disposeGitHubAuthIpc?.()
     void flushOperatorSessions?.()
 })

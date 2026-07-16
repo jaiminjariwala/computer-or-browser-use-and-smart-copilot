@@ -12,14 +12,29 @@ export type Rect = { x: number; y: number; width: number; height: number }
 /** Who authored a conversation turn. */
 export type TurnRole = 'user' | 'assistant'
 
-/** Image data attached to a turn when it carries a Region_Capture. */
+/** Ordering metadata for a JPEG sampled from an uploaded or recorded video. */
+export interface VideoFrameMetadata {
+    /** Opaque id used to group frames without putting a filename in model instructions. */
+    sequenceId: string
+    /** Display name only; no local filesystem path is exposed. */
+    sourceName: string
+    /** One-based frame index in chronological order. */
+    index: number
+    count: number
+    timestampSeconds: number
+    durationSeconds: number
+}
+
+/** Image data attached to a turn (screen capture, upload, PDF page, or video frame). */
 export interface TurnCapture {
-    /** Base64 PNG data URL of the full captured region (kept locally). */
+    /** Base64 image data URL sent through the vision-capable model path. */
     dataUrl: string
     /** Small thumbnail data URL shown in the sidebar (Req 2.5). */
     thumbnailUrl: string
-    /** The rectangle that was selected, in display pixels. */
+    /** The source rectangle, or rendered image dimensions for local attachments. */
     rect: Rect
+    /** Present only when this image is one frame in an ordered local video sample. */
+    videoFrame?: VideoFrameMetadata
 }
 
 /** A single chronological entry in a session conversation. */
@@ -181,10 +196,34 @@ export interface SessionListItem {
     id: string
     /** A short title derived from the first user message (or inferred intent). */
     title: string
+    /** A compact local-only summary of the latest progress or response. */
+    description?: string
     /** ISO timestamp of the last update, for sorting newest-first. */
     updatedAt: string
     /** Number of turns in the session. */
     turnCount: number
+}
+
+/** Public GitHub identity shown after a successful Device Flow sign-in. */
+export interface GitHubUserIdentity {
+    login: string
+    /** Optional display name from the user's GitHub profile. */
+    name?: string
+}
+
+/** Non-secret renderer view of the GitHub authentication lifecycle. */
+export interface GitHubAuthStatus {
+    state: 'unconfigured' | 'signed-out' | 'authorizing' | 'signed-in' | 'error'
+    user?: GitHubUserIdentity
+    /** Safe user-facing detail; never contains an access or device token. */
+    message?: string
+}
+
+/** Short-lived Device Flow details that are safe to show in the renderer. */
+export interface GitHubDeviceChallenge {
+    userCode: string
+    verificationUri: string
+    expiresAt: string
 }
 
 /** Kinds of failures surfaced to the user. */
@@ -259,8 +298,16 @@ export interface GlassBridge {
     saveConfig(cfg: GatewayConfigInput): Promise<void>
     /** Pin/unpin the window on top of other windows (floating-panel toggle). */
     setPinned(pinned: boolean): Promise<void>
+    /** Read the non-secret GitHub authentication state. */
+    getGitHubAuthStatus(): Promise<GitHubAuthStatus>
+    /** Begin GitHub Device Flow and open its verification page in the browser. */
+    startGitHubLogin(): Promise<GitHubDeviceChallenge>
+    /** Remove the encrypted GitHub token and local identity state. */
+    logoutGitHub(): Promise<void>
 
     // main -> Sidebar (event subscriptions; each returns an unsubscribe fn)
+    /** GitHub sign-in state changed; access tokens never cross this bridge. */
+    onGitHubAuthChanged(cb: (status: GitHubAuthStatus) => void): () => void
     /** A turn was appended to the conversation (Req 2.4, 2.5, 5.2). */
     onTurnAppended(cb: (turn: TurnView) => void): () => void
     /** The in-progress/pending state changed (Req 5.3). */

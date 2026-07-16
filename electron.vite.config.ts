@@ -12,6 +12,13 @@ const nodeExternals = [
 
 export default defineConfig({
     main: {
+        // GitHub OAuth client ids are public identifiers. Embed the value used
+        // for this build while still allowing a runtime environment override.
+        define: {
+            __GITHUB_OAUTH_CLIENT_ID__: JSON.stringify(
+                process.env.GITHUB_OAUTH_CLIENT_ID ?? ''
+            )
+        },
         build: {
             outDir: 'out/main',
             rollupOptions: {
