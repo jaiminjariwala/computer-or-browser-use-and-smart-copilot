@@ -96,38 +96,62 @@ src/
 │  ├─ summarizer.ts      # folds old turns into the summary
 │  ├─ ipc.ts             # copilot ipcMain handlers + emitter helpers
 │  ├─ config.ts          # gateway config + encrypted credential store
-│  └─ operator/          # the merged operator engine (self-contained)
+│  └─ operator/          # autonomous operator engine (self-contained)
+│     ├─ evals/          # deterministic AgentLoop scenarios, scoring, JSON CLI
 │     ├─ main/           # loop, safety, environments, executor, providers ...
-│     │  ├─ bootstrap/   # services + start gate + ipc wiring
-│     │  ├─ loop/        # the perceive -> reason -> act state machine
-│     │  ├─ safety/      # gate, autonomy, kill-switch controller
-│     │  ├─ environment/ # local (Mac) + container-desktop backends + router
+│     │  ├─ bootstrap/   # services + start gate + IPC wiring
+│     │  ├─ loop/        # perceive -> reason -> act state machine + progress checks
+│     │  ├─ safety/      # fail-closed gate, autonomy, kill-switch controller
+│     │  ├─ environment/ # local Mac + Playwright browser + container backends
 │     │  ├─ executor/    # native + cliclick input backends
 │     │  ├─ providers/   # OpenAI-compatible providers + tolerant parser
 │     │  ├─ perception/  # capture + observation
+│     │  ├─ memory.ts    # bounded, sanitized completed-session recall
 │     │  ├─ session*/    # operator session model + store (isolated)
 │     │  ├─ config*/     # operator provider config (isolated file)
-│     │  ├─ windows/     # indicator overlay + noVNC desktop window
+│     │  ├─ windows/     # indicator overlay + optional noVNC window
 │     │  └─ ipc.ts       # op:* channels (namespaced, no collisions)
 │     └─ shared/         # operator types, resolved via the @op-shared alias
-├─ preload/index.ts      # the typed window.glass AND window.operator bridges
+├─ preload/index.ts      # typed window.glass and window.operator bridges
 ├─ renderer/
-│  ├─ sidebar/           # chat UI + operator toggle/header
-│  │  ├─ App.tsx         # composer, screenshot carousel, copilot+operator convos
-│  │  ├─ operator.ts     # renders operator activity as chat turns
+│  ├─ sidebar/           # shared chat shell + separate mode conversations
+│  │  ├─ App.tsx         # composer, captures, operator controls, task templates
+│  │  ├─ operator.ts     # privacy-aware operator activity explanations
+│  │  ├─ taskTemplates.ts # built-ins + bounded recent goals in sessionStorage
 │  │  ├─ pdf.ts          # rasterizes attached PDFs to images (pdfjs)
-│  │  ├─ localFallback.ts + local-vlm.worker.ts  # on-device SmolVLM fallback
-│  │  └─ Settings.tsx    # gateway + free fallback provider keys
-│  ├─ overlay/           # capture surface (App.tsx, selection.ts, styles.css)
-│  ├─ indicator/         # "agent in control" overlay (merged from operator)
-│  ├─ voice-lib/         # voice engine (VoiceBars UI; v1 STT dropped from the picker)
-│  ├─ voice-lib-v2/      # voice engine shown as V1 (Whisper base, WebGPU)
-│  └─ voice-lib-v3/      # voice engine shown as V2 (Moonshine, WebGPU, default)
-└─ shared/types.ts       # copilot types (@shared); operator types live in operator/shared
+│  │  ├─ localFallback.ts + local-vlm.worker.ts  # on-device fallback
+│  │  └─ Settings.tsx    # provider and fallback configuration
+│  ├─ overlay/           # capture surface
+│  ├─ indicator/         # agent-in-control overlay + Emergency Stop
+│  ├─ voice-lib/         # shared voice UI
+│  ├─ voice-lib-v2/      # Whisper engine
+│  └─ voice-lib-v3/      # Moonshine engine
+└─ shared/types.ts       # Smart Copilot types
 ```
 
-Two path aliases keep the type worlds apart: `@shared/*` for the copilot types
-and `@op-shared/*` for the vendored operator types.
+Two path aliases keep the type worlds apart: `@shared/*` for Smart Copilot and
+`@op-shared/*` for the operator.
+
+## Operator evaluation architecture
+
+The standalone `npm run eval:operator` command loads the same `AgentLoop` and
+in-memory `SessionManager` used by the app. It replaces only the four injected
+side-effect boundaries—perception, reasoning, safety, and execution—with
+scripted collaborators and supplies deterministic clocks and IDs.
+
+```
+  scripted perception ─┐
+  scripted reasoning ──┼──► real AgentLoop ─► real SessionManager ─► JSON report
+  scripted safety ─────┤
+  scripted executor ───┘
+```
+
+No Electron process, browser, API key, network request, application-session
+persistence, or real input action is used while the AgentLoop runs. After the
+suite finishes, the CLI writes only its deterministic JSON evaluation report.
+This makes terminal-state, retry, budget, confirmation, token, cost, duration,
+and efficiency results repeatable while still testing the production orchestration
+code.
 
 ## Capture flow (technical)
 
@@ -164,8 +188,20 @@ SmolVLM model in the renderer (`chat:fallback` -> `chat:fallback-result`). See
 ## Window behavior
 
 A single-instance lock ensures only one instance runs (a second launch just
-focuses the existing window). The window is a normal window by default; a header
-pin toggle (`window:set-pinned`) floats it on top when you want.
+focuses the existing window). The desktop window opens wide enough for a
+persistent 296px chat rail plus the conversation canvas; below the responsive
+breakpoint the rail becomes an overlay. The window is normal by default, and a
+header pin toggle (`window:set-pinned`) floats it on top when you want.
+
+The chat rail synthesizes the active in-memory session alongside archived
+history, so the selected title and live progress never disappear merely because
+`current.json` is excluded from archive listings. Its footer owns Settings and
+GitHub account controls.
+
+GitHub authentication uses OAuth Device Flow in `github-auth.ts`. Only a public
+client id is configured. Device/access-token exchange, profile lookup, and
+`safeStorage` encryption stay in main; preload exposes only non-secret status,
+challenge code/URL, and minimal identity.
 
 ## IPC channel map (preload bridge)
 
@@ -180,6 +216,8 @@ pin toggle (`window:set-pinned`) floats it on top when you want.
 | SB → main | `config:get-status` / `config:save` | gateway + fallback settings |
 | SB → main | `chat:fallback-result` | on-device fallback answer (or null) |
 | SB → main | `window:set-pinned` | pin/unpin the window on top |
+| SB → main | `github-auth:status/start/logout` | non-secret status, begin Device Flow, or remove the encrypted token |
+| main → SB | `github-auth:changed` | non-secret sign-in lifecycle and minimal identity |
 | main → SB | `turn:appended`, `request:pending`, `error:show`, `session:state`, `summary:state`, `credentials:required` | live UI updates |
 | main → SB | `capture:staged` | a captured shot to add to the carousel |
 | main → SB | `chat:fallback` | ask the on-device model to answer (with context) |

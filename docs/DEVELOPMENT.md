@@ -3,18 +3,115 @@
 ## Commands
 
 ```bash
-npm install        # install dependencies
-npm run dev        # run in development (electron-vite)
-npm test           # run the Vitest suite
-npm run typecheck  # TypeScript type checking
-npm run build      # production build into out/
+npm install              # install dependencies
+npm run dev              # run in development (electron-vite)
+npm run eval:operator    # deterministic AgentLoop scenarios + JSON report
+npm test                 # run the existing Vitest suite once
+npm run typecheck        # TypeScript type checking
+npm run build            # production build into out/
+npm run pack             # build an unpacked macOS app
+npm run dist             # build macOS .dmg + .zip artifacts
 ```
+
+Development mode is long-running. Start it manually in a terminal and stop it
+with Ctrl+C when finished. The validation commands above terminate on their own.
+
+## GitHub OAuth Device Flow
+
+Create a GitHub OAuth App for this application, enable **Device Flow**, and use
+only its public client ID. A client secret is not needed and must not be added to
+the repository or renderer. GitHub's official flow setup is documented at
+[Authorizing OAuth apps](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps).
+
+For development, supply the public id when starting the app:
+
+```bash
+GITHUB_OAUTH_CLIENT_ID=your_public_client_id npm run dev
+```
+
+For a distributable build, provide the same variable to `npm run build`; the
+public id is embedded in the main-process bundle. A runtime environment value
+still takes precedence. After authorization, only the Electron main process
+handles the device/access tokens. The access token is encrypted with macOS
+Keychain-backed `safeStorage` in `github-token.enc`; the preload bridge exposes
+only status, the short user code, verification URL, and minimal account identity.
+
+## Deterministic operator evaluations
+
+`npm run eval:operator` exercises the production `createAgentLoop` and in-memory
+`SessionManager` without launching Electron, Chromium, a provider, or an input
+backend. Only the loop's injected perception, reasoning, safety, and executor
+interfaces are scripted. IDs, time, and the report timestamp are fixed, so two
+runs with the same code produce byte-identical JSON.
+
+The suite currently covers four goal scenarios and two guardrails:
+
+1. one goal-satisfying action followed by completion;
+2. three consecutive executor failures, the real threshold-based
+   `SELF-CORRECTION` guidance, a changed action, and completion;
+3. a routed reasoning failure followed by an actual loop retry (this is not a
+   provider-parser test);
+4. step-budget exhaustion before an extra action reaches the executor;
+5. explicit confirmation before goal-satisfying execution;
+6. a fail-closed safety block that must never call the executor.
+
+The command prints a readable table and writes the machine-readable report to:
+
+```text
+artifacts/operator-evals/latest.json
+```
+
+That directory is gitignored. Choose another path when a CI job or local tool
+needs to retain a specific run:
+
+```bash
+npm run eval:operator -- --output artifacts/operator-evals/ci.json
+```
+
+Goal success is independent of the loop's completion state: an exact expected
+action must first produce the scripted world-state transition, and reasoning must
+separately emit a completion signal. A different action in the same script slot
+cannot satisfy the oracle. This prevents both completion overclaims and
+call-index-only false positives from counting as task success.
+
+The JSON report includes:
+
+- per-scenario assertions and overall suite pass rate;
+- goal success and guardrail pass rates with separate denominators;
+- final state, terminal state, and session status;
+- proposed, executed, successful, failed, and safety-blocked action counts;
+- reasoning failures separately from failures followed by a real retry;
+- captures, executor calls, safety evaluations, confirmation counts, and whether
+  the production self-correction hint reached a reasoning context;
+- deterministic duration, token totals, estimated model cost, and efficiency.
+
+Efficiency is computed only for goal scenarios. A budget-exhaustion or
+safety-block guardrail has `null` efficiency and passes when it reaches the
+intended safe state while proving that no forbidden action reached the executor.
+This is why `scenario checks`, `goal success`, and `guardrail checks` are reported
+separately.
+
+## Recommended validation sequence
+
+Before review or packaging, run:
+
+```bash
+npm run eval:operator
+npm run typecheck
+npm test
+npm run build
+git diff --check
+```
+
+The eval must report all scenario checks passing, TypeScript must report no
+errors, the existing test suite must pass, and the production build must finish.
+`git diff --check` catches whitespace errors in the final patch.
 
 ## Packaging (macOS)
 
 Packaging uses [electron-builder](https://www.electron.build/) via
 `electron-builder.yml`. The production build output (`out/`) is what gets
-packaged; `package.json` `"main"` points at `out/main/index.js`.
+packaged; `package.json` `main` points at `out/main/index.js`.
 
 ```bash
 npm run pack   # build + electron-builder --dir (unpacked .app, fast local check)
@@ -22,18 +119,18 @@ npm run dist   # build + electron-builder --mac (.dmg + .zip into release/)
 ```
 
 Notes:
+
 - Builds are **unsigned** by default (`mac.identity: null`) for personal/local
-  use. For distribution, configure a Developer ID identity and notarization.
-- Hardened Runtime is enabled with `build/entitlements.mac.plist` (includes the
-  microphone `audio-input` entitlement for voice dictation).
+  use. Public distribution should use a Developer ID identity and notarization.
+- Hardened Runtime is enabled with `build/entitlements.mac.plist`, including the
+  microphone `audio-input` entitlement for voice dictation.
 
-## Local "stable signing" deploy loop
+## Local stable-signing deploy loop
 
-To keep the macOS Screen Recording grant from being lost on every rebuild, deploys
-are signed with a trusted self-signed cert (`Glass Local Signing`, created by
-`scripts/setup-signing.sh`). The cert name is left as-is on purpose — renaming
-it would change the signature and force macOS to re-prompt for Screen Recording.
-Typical loop:
+To keep the macOS Screen Recording grant from being lost on every rebuild, local
+deploys are signed with the trusted self-signed certificate created by
+`scripts/setup-signing.sh`. Keep the existing certificate name: changing the
+signature causes macOS to request permission again.
 
 ```bash
 APP="Computer or Browser Use and Smart Copilot"
@@ -46,36 +143,74 @@ cp -R "release/mac-arm64/$APP.app" "/Applications/$APP.app"
 open "/Applications/$APP.app"
 ```
 
-Do **not** run `tccutil reset` — stable signing is what makes the permission
-grant persist; resetting forces a re-grant.
+Do **not** run `tccutil reset`; stable signing is what lets the permission grant
+persist.
 
 ## Manual QA (macOS-specific)
 
-These depend on the live window server + TCC prompts + Spaces/full-screen, so
-they can't be covered by the automated suite.
+These checks depend on the live window server, macOS permissions, browser UI, or
+Spaces and therefore remain manual.
 
 ### 1. Capture shortcuts from another app
-- [ ] With the app unfocused (e.g. Safari focused), press ⌘⇧D → native region crosshair; the shot lands as a thumbnail above the input.
-- [ ] ⌘⇧F → window pick; ⌘⇧S → full screen. Each stages a thumbnail.
-- [ ] Press Esc during a capture → nothing is staged (clean cancel).
 
-### 2. Screen Recording permission: grant
-- [ ] Before granting, trigger capture → instructions to enable it appear.
-- [ ] Grant it in System Settings → Privacy & Security → Screen Recording → capture works.
+- [ ] With the app unfocused, press Cmd+Shift+D and select a region; the shot
+  appears above the input.
+- [ ] Cmd+Shift+F selects a window; Cmd+Shift+S captures the full screen.
+- [ ] Esc during capture cancels without staging an image.
 
-### 3. Screen Recording permission: revocation
-- [ ] Revoke after a successful capture → next capture detects it, skips, and shows re-grant steps.
+### 2. Permission grant and revocation
 
-### 4. Always-on-top across Spaces / full-screen
-- [ ] Sidebar stays available when switching Spaces.
-- [ ] Sidebar + Overlay appear above full-screen apps when summoned.
+- [ ] Before Screen Recording is granted, capture shows enablement instructions.
+- [ ] Grant it in System Settings; capture and local Compute Use work.
+- [ ] Revoke it after a successful capture; the next local action fails closed and
+  shows re-enable instructions.
 
-### 5. Voice dictation
-- [ ] Tap mic, speak → words stream in; stop → no late change.
-- [ ] First run downloads the model once (needs network); later runs work offline.
+### 3. Browser tabs and popup promotion
 
-## Credentials / gateway
+- [ ] Start Browser Use and ask it to open sources in separate tabs.
+- [ ] New, close, next/previous, and numbered-tab shortcuts affect browser tabs,
+  not page content.
+- [ ] A popup/new tab becomes active and appears in the next tab digest.
+- [ ] Closing the active tab promotes another open tab; an agent-issued close
+  on the only tab leaves a usable blank page.
+- [ ] Open and immediately close a popup before the next action; the old
+  observation is rejected and the loop captures again.
+
+### 4. Form filling and validation
+
+- [ ] Focus an input and type through the agent; the field is replaced through
+  DOM fill rather than leaking text into browser chrome.
+- [ ] Attempt Enter and a submit-button click with an invalid required field; the
+  action fails and the page does not submit.
+- [ ] Correct the field and confirm a valid form can proceed under the selected
+  autonomy policy.
+
+### 5. Templates and activity privacy
+
+- [ ] Selecting a built-in template fills the composer and selects its environment
+  but does not auto-start.
+- [ ] A submitted goal appears in Recent; no more than five are retained.
+- [ ] Activity rows show semantic actions, failures, and API/Vision mode without
+  typed values or raw coordinates.
+
+### 6. Session memory
+
+- [ ] Complete a task, then start a clearly related task and confirm a bounded
+  successful-summary memory is available to reasoning.
+- [ ] Unrelated or incomplete sessions are not recalled.
+- [ ] Recalled context does not contain screenshots, raw observations,
+  coordinates, or typed action values.
+
+### 7. Window and voice behavior
+
+- [ ] Sidebar and capture overlay behave correctly across Spaces and full-screen
+  apps.
+- [ ] Tap the microphone, speak, and stop; text streams while recording and does
+  not change after stop.
+- [ ] After the initial model download, dictation works offline.
+
+## Credentials and providers
 
 See [AI gateway](./AI-GATEWAY.md). Configure an OpenAI-compatible primary
-provider, a local fallback such as Ollama, or any of the free hosted keys in
+provider, a local endpoint, or one of the supported hosted fallback keys in
 Settings.

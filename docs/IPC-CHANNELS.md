@@ -35,6 +35,7 @@ the same window without one engine's listeners firing on the other's events.
 | `audio:transcribe` | Speech-to-text for a recorded clip. |
 | `config:get-status` / `config:save` | Gateway + fallback settings (owned by config.ts). |
 | `window:set-pinned` | Pin/unpin the window on top (header toggle). |
+| `github-auth:status` / `github-auth:start` / `github-auth:logout` | Read non-secret status, begin GitHub Device Flow, or delete the encrypted token. |
 
 ### Main -> renderer (events)
 
@@ -45,6 +46,7 @@ Copilot events include the originals (`turn:appended`, `request:pending`,
 | --- | --- |
 | `capture:staged` | A freshly captured shot to add to the carousel above the input. |
 | `chat:fallback` | Ask the renderer's on-device model to answer (carries the full context) when the gateway chain failed. |
+| `github-auth:changed` | Non-secret Device Flow status and minimal GitHub identity; never a token. |
 
 ### Main -> renderer (events)
 

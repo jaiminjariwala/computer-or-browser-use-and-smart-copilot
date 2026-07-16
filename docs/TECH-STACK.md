@@ -1,105 +1,110 @@
 # Tech stack
 
-Every technology in the app and why it earns its place. Nothing here is
-load-bearing trivia; it is the actual set of tools the code depends on.
+Every technology below is used by the current codebase and has a specific role.
+Version numbers are the installed major families from `package.json`.
 
 ## At a glance
 
 ```
-  ┌─────────────────────────────────────────────────────────────┐
-  │  Electron (main + renderer, contextIsolated)                 │
+  ┌──────────────────────────────────────────────────────────────┐
+  │ Electron 43 (privileged main + isolated renderers)           │
   │                                                              │
-  │   UI            React 18 + TypeScript                        │
-  │   Build         electron-vite (Vite 5) + electron-builder    │
-  │   Copilot AI    OpenAI-compatible gateway client             │
-  │   Operator AI   OpenAI-compatible provider chain             │
-  │   Fallback      free hosted chain -> on-device SmolVLM       │
-  │   Voice         transformers.js (Whisper base / Moonshine)   │
-  │   Docs/PDF      pdfjs-dist (attach + rasterize PDFs)         │
-  │   Fonts         Inter (self-hosted, offline)                 │
-  │   Sandbox       Docker (Colima) Linux desktop + noVNC        │
-  │   Tests         Vitest + fast-check (property based)         │
-  └─────────────────────────────────────────────────────────────┘
+  │ UI             React 18 + TypeScript 5 + Monaco Editor       │
+  │ Build          electron-vite 5 + Vite 7 + electron-builder   │
+  │ Copilot AI     OpenAI-compatible client + local fallback     │
+  │ Operator AI    typed provider chain + deterministic loop     │
+  │ Browser use    Playwright 1.61 + DOM-first Chromium          │
+  │ Voice/local AI transformers.js (Whisper/Moonshine/SmolVLM)   │
+  │ Tests          Vitest 4 + fast-check 4                       │
+  │ Agent evals    tsx 4.20.6 + scripted deterministic seams     │
+  └──────────────────────────────────────────────────────────────┘
 ```
 
-## Runtime and shell
+## Runtime and build
 
 | Tech | Role | Why this one |
 | --- | --- | --- |
-| **Electron 32** | Desktop shell: a privileged main process plus sandboxed renderer windows. | Gives us global hotkeys, screen capture, native input, and a Chromium UI in one runtime. |
-| **electron-vite 2 / Vite 5** | Dev server and bundler for the three build targets (main, preload, renderer). | Fast HMR for the UI, auto-rebuild for main, one config for all targets. |
-| **electron-builder** | Packages and signs the `.app`. | Standard, well-trodden macOS packaging. |
+| **Electron 43** | Desktop shell with a privileged main process and isolated renderer windows. | Provides global hotkeys, screen capture, native permission APIs, input control, and a Chromium UI. |
+| **electron-vite 5 / Vite 7** | Development server and bundler for main, preload, and renderer targets. | Fast renderer HMR plus one build pipeline for all Electron targets, with compatible peer versions. |
+| **electron-builder 26** | Builds the macOS `.app`, `.dmg`, and `.zip`. | Mature packaging, entitlements, signing, and release artifacts. |
+| **TypeScript 5** | Types the main process, preload bridge, renderers, action space, sessions, and reports. | Compile-time contracts are especially valuable across IPC and agent safety boundaries. |
 
-## UI
-
-| Tech | Role | Why this one |
-| --- | --- | --- |
-| **React 18** | All renderer UI: sidebar chat, capture overlay, indicator overlay. | Component model fits the chat + panels cleanly. |
-| **TypeScript 5** | The whole codebase. | Typed IPC payloads and a typed Action space catch mistakes at compile time. |
-| **react-markdown + remark-gfm** | Renders assistant answers and operator step commentary as Markdown. | Assistant text is Markdown; user text stays plain. |
-| **framer-motion** | Small UI motion. | Smooth, declarative transitions. |
-| **@fontsource-variable/inter** | The UI font, self-hosted. | Consistent, crisp type offline and within the renderer CSP (no CDN). |
-| **pdfjs-dist** | Rasterizes attached PDFs page-by-page to images. | A vision model can't read a raw PDF; the paperclip button turns each page into an image card. |
-
-## AI
-
-The two modes reason differently, so there are two clients.
-
-```
-  Copilot mode                       Operator mode
-  ------------                       -------------
-  region image + question            screenshot (+ DOM hints)
-        |                                  |
-        v                                  v
-  OpenAI-compatible provider         OpenAI-compatible provider chain
-  (chat completions, vision)         (computer-use tool calling)
-        |                                  |
-        v                                  v
-  next-step advice text              a typed Action to execute
-```
+## UI and documents
 
 | Tech | Role | Why this one |
 | --- | --- | --- |
-| **openai (SDK)** | Talks to the OpenAI-compatible gateway for copilot answers and model listing, and to the whole hosted fallback chain (OpenRouter / GLM / Gemini). | They're all OpenAI-compatible, so one client serves the primary and every hosted fallback. |
-| **Operator provider chain** | The operator uses the same OpenAI-compatible provider abstraction as copilot mode, including free hosted providers and local endpoints. | One provider surface keeps your own models, free hosted keys, and local gateways interchangeable. |
-| **Free hosted fallback chain** | Google Gemini Flash, Zhipu GLM-4V-Flash, and OpenRouter, tried in order when the primary provider fails. | Free keyed options, and no code path per provider since all are OpenAI-compatible. See [Fallback chain](./FALLBACK.md). |
-| **transformers.js VLM (SmolVLM 256M/500M)** | On-device last-resort fallback that answers with no key and no network. | The only truly zero-config tier: when every hosted option is down, the copilot still works, fully local. |
-| **Tolerant action parser** | Normalizes model tool-call arguments into the typed Action space. | Models drift in how they emit coordinates, keys, and scroll amounts; the parser accepts the common variants. |
+| **React 18** | Sidebar chat, capture overlay, activity view, settings, and indicator UI. | Component state maps cleanly to the app's independent conversations and panels. |
+| **Monaco Editor 0.52** | Readable code-view panels in chat. | Syntax highlighting, familiar editor behavior, and large-document handling without building an editor from scratch. |
+| **react-markdown + remark-gfm** | Renders assistant answers and operator explanations as Markdown. | Keeps model output readable while user text remains plain. |
+| **framer-motion 11** | Focused UI transitions. | Declarative motion without owning animation lifecycle code. |
+| **@fontsource-variable/inter** | Self-hosted UI typography. | Consistent rendering offline and under the renderer CSP. |
+| **pdfjs-dist 6** | Rasterizes attached PDF pages into image cards. | Vision models receive page images rather than unsupported raw PDF bytes. |
+
+## AI and reasoning
+
+The two app modes share provider concepts but produce different outputs.
+
+```
+  Smart Copilot                      Computer or Browser Use
+  -------------                      -----------------------
+  image(s) + question                observation + bounded history
+          │                                      │
+          ▼                                      ▼
+  chat completion text               typed action/completion/help/failure
+          │                                      │
+          ▼                                      ▼
+  advice for the user                safety gate -> environment executor
+```
+
+| Tech | Role | Why this one |
+| --- | --- | --- |
+| **openai SDK 4** | Calls OpenAI-compatible primary and hosted fallback endpoints. | One client works with configured endpoints and compatible hosted providers. |
+| **Operator provider chain** | Routes typed reasoning across configured and fallback providers. | Provider failures remain isolated from the loop state machine. |
+| **Tolerant action parser** | Normalizes common model variations into the fixed `Action` union. | Valid intent is not discarded solely because a provider formatted coordinates or key chords differently. |
+| **Deterministic trajectory summaries** | Rebuild successful progress from static action categories without another model call. | Avoids extra latency and cost while excluding rationales, typed values, coordinates, and free-form result prose. |
+| **Bounded local session memory** | Recalls sanitized summaries from up to three related completed sessions. | Reuses useful approaches under a generic prior-task label without replaying screenshots, typed values, coordinates, raw goals, or full trajectories. |
+| **transformers.js models** | Local SmolVLM/SmolLM2 fallback and on-device speech recognition. | Supplies a zero-key, local path after initial model download. |
+
+## Browser and computer environments
+
+| Tech | Role | Why this one |
+| --- | --- | --- |
+| **Playwright 1.61** | Launches and controls the visible Browser Use Chromium instance. | Exposes page text, focused fields, native form validity, popup events, and tabs directly rather than guessing from pixels. |
+| **DOM-first hybrid execution** | Snaps nearby coordinates to interactive controls and reports `api` versus `vision`. | Structured actions are more reliable while coordinate fallback preserves the shared action contract. |
+| **macOS capture and input backends** | Power Compute Use on the local Mac. | They operate the real desktop under explicit Screen Recording and Accessibility permissions. |
+| **Docker/Colima container backend** | Optional isolated Linux desktop service. | Keeps experimental desktop automation away from the host machine. |
+| **Xvfb + fluxbox + x11vnc + noVNC** | Display server, small window manager, and watchable remote desktop for the container. | Provides a complete but lightweight graphical Linux environment. |
+| **Chromium + xdotool + scrot** | Browser, synthesized input, and screenshots inside the container. | Simple primitives behind the container control server. |
 
 ## Voice (on-device)
 
 | Tech | Role | Why this one |
 | --- | --- | --- |
-| **@huggingface/transformers** and **@xenova/transformers** | Run speech-to-text (and the SmolVLM fallback) models in the renderer (WASM and WebGPU). | Fully on-device: no audio or screenshots leave the machine for these. |
-| **Whisper base, Moonshine base** | The two STT engines, shown as V1 and V2 in the collapsible voice pill. | The old tiny-WASM V1 was dropped for quality; both remaining engines are WebGPU. See [Voice](./VOICE.md). |
-
-## Sandboxed operator environment
-
-| Tech | Role | Why this one |
-| --- | --- | --- |
-| **Docker via Colima** | Runs the sandboxed Linux desktop as a container. | Isolates the agent from your real machine. Colima avoids the Docker Desktop license block. |
-| **Xvfb + fluxbox + x11vnc + noVNC** | A headless X display, a tiny window manager, and a browser-based live view. | Lets you watch the agent work in a real window. |
-| **Chromium + xdotool + scrot** | The browser the agent drives, plus input synthesis and screenshots inside the container. | Real browser behavior; simple, scriptable control. |
-| **Control server (Python)** | Exposes `/health`, `/screenshot`, `/dom`, `/action` inside the container. | One HTTP surface the app drives for perception and action. |
+| **@huggingface/transformers 3** and **@xenova/transformers 2** | Run speech and local vision/text models in renderer workers using WASM/WebGPU. | Audio and local-fallback screenshots can stay on the machine. |
+| **Whisper base / Moonshine base** | Two selectable dictation engines. | Gives a quality/speed choice while retaining local processing. |
 
 ## Persistence and security
 
 | Tech | Role | Why this one |
 | --- | --- | --- |
-| **Electron safeStorage** | Encrypts API keys with the OS keychain. | Keys never sit on disk in plain text. |
-| **JSON on disk (userData)** | Sessions and non-secret config. | Simple, inspectable, atomic writes. |
-| **contextIsolation + preload bridge** | The only path from renderer to main. | Renderers get a typed API, never raw Node or system access. |
+| **Electron safeStorage** | Encrypts provider secrets with the OS keychain. | Credentials are not persisted as plain text. |
+| **JSON under Electron `userData`** | Stores sessions and non-secret configuration. | Simple, inspectable records with atomic persistence. |
+| **Renderer `sessionStorage`** | Keeps up to five recent editable goals for the current renderer session. | Avoids durable copies, skips common sensitive markers, and clears with operator-history deletion. |
+| **contextIsolation + preload bridges** | Exposes typed `window.glass` and `window.operator` APIs. | Renderers never receive unrestricted Node or system access. |
 
-## Testing
+## Testing and evaluation
 
 | Tech | Role | Why this one |
 | --- | --- | --- |
-| **Vitest 2** | Unit and integration tests across main, preload, and renderer logic. | Fast, Vite-native, TypeScript-friendly. |
-| **fast-check** | Property-based tests for the trickier pure logic (session folds, capture math, chat flow). | Finds edge cases example tests miss. |
+| **Vitest 4** | Existing unit, integration, and property-oriented test suite. | Vite-native TypeScript execution and fast non-watch CI runs. |
+| **fast-check 4** | Generates edge cases for pure state, parsing, safety, and geometry logic. | Tests invariants beyond hand-picked examples. |
+| **tsx 4.20.6** | Runs the standalone TypeScript AgentLoop evaluation CLI. | Executes the real TypeScript modules and path aliases without emitting a separate build or disguising the benchmark as a unit test. |
+| **Deterministic AgentLoop harness** | Runs four goal scenarios and two guardrails through production orchestration with scripted seams. | Uses exact-action-matched world-state transitions, separates blocks from executor failures and actual retries from failures, and produces byte-repeatable reports without Electron, network calls, or real input. |
 
 ## Why the split reasoning clients
 
-Copilot mode answers a human ("what do I do next?") so a vision chat completion
-is perfect. Operator mode answers a machine ("what is the next action?") so it
-needs strict, typed tool calling against a fixed Action space. Same key, same
-provider family, two different shapes of request.
+Smart Copilot answers a person ("what should I do next?") and returns prose.
+Computer or Browser Use answers the state machine ("what is the next typed
+outcome?") and must conform to a fixed action contract. Keeping those request
+shapes separate makes both simpler while allowing them to share compatible
+provider infrastructure.
