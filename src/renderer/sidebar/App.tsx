@@ -1,20 +1,37 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import type { GlassError, SessionContext, SessionListItem, SessionSummary, TurnCapture, TurnView } from '@shared/types'
+import type { GlassError, SessionContext, SessionListItem, SessionSummary, SessionView, TurnCapture, TurnView } from '@shared/types'
 import type { AgentSessionView, ConfirmationRequest, LoopStateView } from '@op-shared/types'
 import { Settings } from './Settings'
+import { ChatSidebar } from './ChatSidebar'
+import { VideoRecorder } from './VideoRecorder'
+import { extractVideoFrames, formatMediaDuration } from './video'
 import { CodeMarkdown } from './CodeBlock'
 import { CodePanel } from './CodePanel'
 import { CodePanelContext, type CodeArtifact } from './codePanelContext'
 import { extractCodeBlocks } from './codeTheme'
 import { getConfigBridge } from './config-bridge'
 import { isSubmittable, makeTextTurn } from './chat'
-import { describeStep, describeAction, isBusyState, isTerminalState, type StepItem } from './operator'
+import {
+    describeConfirmationAction,
+    describeStep,
+    isBusyState,
+    isTerminalState,
+    sanitizeHelpText,
+    type StepItem
+} from './operator'
 import { renderPdfToImages } from './pdf'
 import { runLocalFallback, buildFallbackRequest } from './localFallback'
 import { curateForMode, friendlyLabel, type CuratedModels } from './models'
 import { routeIntent } from './intentRouter'
+import {
+    BUILT_IN_TASK_TEMPLATES,
+    clearRecentTaskTemplates,
+    loadRecentTaskTemplates,
+    rememberRecentTaskTemplate,
+    type OperatorTaskTemplate
+} from './taskTemplates'
 import { VoiceBars } from '../voice-lib'
 import { useSmoothDictation as useDictationV2 } from '../voice-lib-v2'
 import { useSmoothDictation as useDictationV3 } from '../voice-lib-v3'
@@ -39,7 +56,7 @@ interface ChatBridge {
     sendMessage(text: string): Promise<void>
     sendCaptures(captures: TurnCapture[], text?: string): Promise<void>
     newSession(): Promise<void>
-    getSession(): Promise<{ turns: TurnView[]; summary?: SessionSummary }>
+    getSession(): Promise<SessionView>
     listSessions(): Promise<SessionListItem[]>
     openSession(id: string): Promise<void>
     deleteSessions(ids: string[]): Promise<void>
@@ -47,7 +64,7 @@ interface ChatBridge {
     onTurnAppended(cb: (turn: TurnView) => void): void | (() => void)
     onPending(cb: (pending: boolean) => void): void | (() => void)
     onError(cb: (err: GlassError) => void): void | (() => void)
-    onSessionState?(cb: (session: { turns: TurnView[]; summary?: SessionSummary }) => void): void | (() => void)
+    onSessionState?(cb: (session: SessionView) => void): void | (() => void)
     onCredentialsRequired?(cb: () => void): void | (() => void)
     onSummary?(cb: (summary: SessionSummary) => void): void | (() => void)
     onCaptureStaged?(cb: (capture: TurnCapture) => void): void | (() => void)
@@ -90,11 +107,16 @@ function TurnBody({ turn }: { turn: TurnView }): React.JSX.Element {
     return <>{turn.text}</>
 }
 
-/** A staged screenshot awaiting send: the capture plus a display name. */
-interface StagedShot {
+/** A local image or video waiting above the composer until Send. */
+interface StagedAttachment {
     id: string
-    capture: TurnCapture
+    kind: 'image' | 'video'
+    status: 'processing' | 'ready'
+    captures: TurnCapture[]
     name: string
+    /** Blob URL used only for the local playable video preview. */
+    previewUrl?: string
+    durationSeconds?: number
 }
 
 /**
@@ -146,45 +168,29 @@ function operatorViewToSteps(view: AgentSessionView): Array<{ id: string } & Ste
     }))
 }
 
-/** A relative date-bucket label for grouping chats (Today, Yesterday, then month). */
-function dateBucketLabel(iso: string): string {
-    const d = new Date(iso)
-    if (Number.isNaN(d.getTime())) return 'Earlier'
-    const startOfDay = (x: Date): number =>
-        new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime()
-    const now = new Date()
-    const diffDays = Math.round((startOfDay(now) - startOfDay(d)) / 86_400_000)
-    if (diffDays <= 0) return 'Today'
-    if (diffDays === 1) return 'Yesterday'
-    if (diffDays < 7) return 'Previous 7 days'
-    if (diffDays < 30) return 'Previous 30 days'
-    const sameYear = d.getFullYear() === now.getFullYear()
-    return d.toLocaleDateString(
-        undefined,
-        sameYear ? { month: 'long' } : { month: 'long', year: 'numeric' }
-    )
+const NAV_OVERLAY_BREAKPOINT = 720
+const MAX_STAGED_VIDEOS = 2
+
+function compactSidebarText(value: string | undefined, limit = 120): string {
+    const compact = (value ?? '')
+        .replace(/[`*_>#\[\]]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+    return compact.length > limit ? `${compact.slice(0, limit)}…` : compact
 }
 
-/**
- * Bucket the (already newest-first) chat list into date groups, preserving
- * order so Today comes first, then Yesterday, then older months.
- */
-function groupHistoryByDate(
-    items: SessionListItem[]
-): Array<{ label: string; items: SessionListItem[] }> {
-    const groups: Array<{ label: string; items: SessionListItem[] }> = []
-    const indexByLabel = new Map<string, number>()
-    for (const item of items) {
-        const label = dateBucketLabel(item.updatedAt)
-        let gi = indexByLabel.get(label)
-        if (gi === undefined) {
-            gi = groups.length
-            indexByLabel.set(label, gi)
-            groups.push({ label, items: [] })
-        }
-        groups[gi].items.push(item)
-    }
-    return groups
+function titleFromTurns(turns: TurnView[], fallback: string): string {
+    const firstUser = turns.find(
+        (turn) =>
+            turn.role === 'user' &&
+            typeof turn.text === 'string' &&
+            turn.text.trim().length > 0
+    )?.text
+    const title = compactSidebarText(firstUser ?? fallback, 54)
+    if (title) return title
+    return turns.some((turn) => turn.capture || (turn.captures?.length ?? 0) > 0)
+        ? 'Screen capture chat'
+        : 'Untitled chat'
 }
 
 /** The two remaining voice engines, shown as V1/V2 (v1 tiny-WASM was dropped). */
@@ -228,6 +234,26 @@ function PaperclipIcon(): React.JSX.Element {
             aria-hidden="true"
         >
             <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+        </svg>
+    )
+}
+
+/** Camera glyph for the in-app video recorder. */
+function VideoCameraIcon(): React.JSX.Element {
+    return (
+        <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.9"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+        >
+            <rect x="3" y="6" width="13" height="12" rx="3" />
+            <path d="m16 10 4.2-2.8a.5.5 0 0 1 .8.42v8.76a.5.5 0 0 1-.8.42L16 14" />
         </svg>
     )
 }
@@ -456,7 +482,7 @@ export function App(): React.JSX.Element {
     // opens the panel exactly once (clicking a pill re-opens it thereafter).
     const lastAutoOpenedTurnRef = useRef<string | null>(null)
     const [navOpen, setNavOpen] = useState(() =>
-        typeof window !== 'undefined' ? window.innerWidth > 600 : true
+        typeof window !== 'undefined' ? window.innerWidth > NAV_OVERLAY_BREAKPOINT : true
     )
     const [history, setHistory] = useState<SessionListItem[]>([])
     const [menu, setMenu] = useState<{ x: number; y: number; id: string } | null>(null)
@@ -475,15 +501,21 @@ export function App(): React.JSX.Element {
     const [operatorMode, setOperatorMode] = useState(false)
     const [opEnvironment, setOpEnvironment] = useState<'browser' | 'container-desktop' | 'local'>('browser')
     const [opAutonomy, setOpAutonomy] = useState<'manual' | 'supervised' | 'autonomous'>('autonomous')
+    // Reusable operator goals: built-in starters plus a small local list of
+    // recently submitted tasks. Selecting a template only fills the composer.
+    const [showTaskTemplates, setShowTaskTemplates] = useState(false)
+    const [recentTaskTemplates, setRecentTaskTemplates] = useState<OperatorTaskTemplate[]>(() =>
+        loadRecentTaskTemplates()
+    )
     // Live status pill (operator): the provider actually serving steps right now
     // (updates as the fallback chain shifts) and whether it is acting via the
     // DOM (api) or raw pixels (vision).
     const [opActiveProvider, setOpActiveProvider] = useState<string | null>(null)
     const [opActiveMode, setOpActiveMode] = useState<'api' | 'vision' | null>(null)
-    // The chat currently shown in the chat area (its archived id, once opened),
-    // so deleting that exact chat can also clear the view instead of leaving a
-    // stale conversation behind.
-    const [openSessionId, setOpenSessionId] = useState<string | null>(null)
+    // Track the active chat/task independently so switching modes preserves the
+    // selected row in each history rail.
+    const [chatSessionId, setChatSessionId] = useState<string | null>(null)
+    const [opSessionId, setOpSessionId] = useState<string | null>(null)
     // The operator's live steps for the current run, rendered as a bordered
     // checklist (each with a tick; a spinner trails while the agent works).
     const [opSteps, setOpSteps] = useState<Array<{ id: string } & StepItem>>([])
@@ -494,7 +526,8 @@ export function App(): React.JSX.Element {
     // Screenshots captured with Cmd+Shift+D land here first (a horizontal
     // carousel above the composer) instead of being sent immediately, so the
     // user can stack several and send them together.
-    const [staged, setStaged] = useState<StagedShot[]>([])
+    const [staged, setStaged] = useState<StagedAttachment[]>([])
+    const [showVideoRecorder, setShowVideoRecorder] = useState(false)
     // Operator mode keeps its OWN conversation + history, separate from copilot.
     // Toggling modes swaps the visible chat (copilot chat is hidden, not lost),
     // so each mode reads like its own workspace.
@@ -504,7 +537,29 @@ export function App(): React.JSX.Element {
     const conversationRef = useRef<HTMLDivElement>(null)
     const inputRef = useRef<HTMLTextAreaElement>(null)
     const addFileRef = useRef<HTMLInputElement>(null)
+    const stagedRef = useRef<StagedAttachment[]>([])
     const draftRef = useRef('')
+
+    // Revoke playable video blob URLs as soon as their attachment leaves the
+    // composer, and again on unmount. Extracted JPEG frames are plain data URLs.
+    useEffect(() => {
+        const currentUrls = new Set(
+            staged.flatMap((attachment) => attachment.previewUrl ? [attachment.previewUrl] : [])
+        )
+        for (const attachment of stagedRef.current) {
+            if (attachment.previewUrl && !currentUrls.has(attachment.previewUrl)) {
+                URL.revokeObjectURL(attachment.previewUrl)
+            }
+        }
+        stagedRef.current = staged
+    }, [staged])
+
+    useEffect(() => () => {
+        for (const attachment of stagedRef.current) {
+            if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl)
+        }
+        stagedRef.current = []
+    }, [])
 
     // Live A/B switch between the three frozen voice engines. All three hooks
     // are mounted unconditionally (they stay idle until start() is called and
@@ -547,12 +602,12 @@ export function App(): React.JSX.Element {
         void bridge
             .getSession()
             .then((session) => {
-                if (active && session?.turns?.length) {
+                if (!active) return
+                setChatSessionId(session.id || null)
+                if (session.turns.length) {
                     setState(initialConversationState(session.turns))
                 }
-                if (active && session?.summary) {
-                    setSummary(session.summary)
-                }
+                setSummary(session.summary ?? null)
             })
             .catch(() => {
                 /* No restorable session; start empty. */
@@ -573,14 +628,21 @@ export function App(): React.JSX.Element {
             bridge.onPending((pending) => setState((s) => setPending(s, pending))),
             bridge.onError((err) => setState((s) => setError(s, err))),
             bridge.onSessionState?.((session) => {
-                setState(initialConversationState(session?.turns ?? []))
-                setSummary(session?.summary ?? null)
+                setChatSessionId(session.id || null)
+                setState(initialConversationState(session.turns ?? []))
+                setSummary(session.summary ?? null)
             }),
             bridge.onSummary?.((s) => setSummary(s)),
             bridge.onCaptureStaged?.((capture) =>
                 setStaged((prev) => [
                     ...prev,
-                    { id: `shot-${Date.now()}-${prev.length}`, capture, name: makeShotName() }
+                    {
+                        id: `shot-${Date.now()}-${prev.length}`,
+                        kind: 'image',
+                        status: 'ready',
+                        captures: [capture],
+                        name: makeShotName()
+                    }
                 ])
             ),
             // Gateway is down -> answer with the on-device SmolVLM fallback and
@@ -626,6 +688,18 @@ export function App(): React.JSX.Element {
         const op = getOperatorBridge()
         if (!op) return
 
+        // Restore the current operator task into the rail and checklist on
+        // launch. Acting never resumes automatically; this is display state.
+        void op
+            .getSession?.()
+            .then((view) => {
+                if (!view.id || !view.goalText.trim()) return
+                setOpSessionId(view.id)
+                setOpState(initialConversationState(operatorViewToTurns(view)))
+                setOpSteps(operatorViewToSteps(view))
+            })
+            .catch(() => undefined)
+
         // Operator activity flows into the SEPARATE operator conversation
         // (opState), never the copilot chat.
         const appendAssistant = (text: string): void => {
@@ -648,6 +722,7 @@ export function App(): React.JSX.Element {
                 }
             }),
             op.onStateChanged?.((view: LoopStateView) => {
+                if (view.sessionId) setOpSessionId(view.sessionId)
                 setOpState((s) => setPending(s, isBusyState(view.state)))
                 if (isTerminalState(view.state)) {
                     setConfirmation(null)
@@ -658,7 +733,9 @@ export function App(): React.JSX.Element {
                 setOpState((s) => setPending(s, false))
             }),
             op.onHelpRequired?.((question) => {
-                appendAssistant(question)
+                appendAssistant(
+                    sanitizeHelpText(question) ?? 'The agent needs more information to continue.'
+                )
                 setOpState((s) => setPending(s, false))
             }),
             op.onError?.((err) => {
@@ -724,9 +801,9 @@ export function App(): React.JSX.Element {
     // breakpoint, and re-open it when it widens again (only on crossing, so a
     // manual collapse/expand within a width band is preserved).
     useEffect(() => {
-        let wasWide = window.innerWidth > 600
+        let wasWide = window.innerWidth > NAV_OVERLAY_BREAKPOINT
         const onResize = (): void => {
-            const isWide = window.innerWidth > 600
+            const isWide = window.innerWidth > NAV_OVERLAY_BREAKPOINT
             if (isWide !== wasWide) {
                 wasWide = isWide
                 setNavOpen(isWide)
@@ -777,13 +854,22 @@ export function App(): React.JSX.Element {
         }
     }, [])
 
+    const applyTaskTemplate = useCallback((template: OperatorTaskTemplate) => {
+        setDraft(template.goal)
+        setOpEnvironment(template.environment)
+        setShowTaskTemplates(false)
+        requestAnimationFrame(() => inputRef.current?.focus())
+    }, [])
+
     // Start an operator task for `goal` in the given environment: record it in
     // the operator conversation and kick off the engine. Shared by the explicit
     // operator path and the auto-router (a copilot command routed to operator).
     const runOperatorGoal = useCallback(
         (goal: string, environment: 'browser' | 'container-desktop' | 'local') => {
+            setOpSessionId(null)
             setOpState((s) => addUserMessage(s, goal).state)
             setOpSteps([]) // fresh checklist for the new run
+            setShowTaskTemplates(false)
             const op = getOperatorBridge()
             if (!op || typeof op.startGoal !== 'function') {
                 setOpState((s) =>
@@ -809,7 +895,10 @@ export function App(): React.JSX.Element {
                         setOpState((s) =>
                             setError(s, { kind: 'render-failed', message: result.error.message, recoverable: true })
                         )
+                        return
                     }
+                    setOpSessionId(result.sessionId)
+                    setRecentTaskTemplates(rememberRecentTaskTemplate(goal, environment))
                 })
                 .catch((err: unknown) => {
                     setOpState((s) => setPending(s, false))
@@ -821,9 +910,21 @@ export function App(): React.JSX.Element {
     )
 
     const submit = useCallback(() => {
-        const hasCaptures = staged.length > 0
-        // Screenshots can be sent on their own, so an empty draft is fine when
-        // the carousel has captures.
+        const isPreparingAttachment = staged.some((attachment) => attachment.status === 'processing')
+        if (isPreparingAttachment) {
+            setState((current) =>
+                setError(current, {
+                    kind: 'render-failed',
+                    message: 'Your video is still being converted into AI-readable frames.',
+                    recoverable: true
+                })
+            )
+            return
+        }
+
+        const captures = staged.flatMap((attachment) => attachment.captures)
+        const hasCaptures = captures.length > 0
+        // Images, PDFs, and sampled videos can be sent without typed text.
         if (!isSubmittable(draft) && !hasCaptures) {
             return
         }
@@ -835,11 +936,10 @@ export function App(): React.JSX.Element {
         // trailing transcription lands back in the now-cleared field.
         if (dictation.listening) cancelActive()
 
-        // Staged screenshots take priority: send them (plus any typed text) as a
-        // single multi-image message to the COPILOT chat, then clear the carousel.
+        // Every attachment reaches the provider as one or more image captures.
+        // Video captures retain chronological frame metadata for request labels.
         if (hasCaptures) {
             setState((s) => addUserMessage(s, text).state)
-            const captures = staged.map((s) => s.capture)
             setStaged([])
             const bridge = getChatBridge()
             if (!bridge || typeof bridge.sendCaptures !== 'function') {
@@ -853,7 +953,7 @@ export function App(): React.JSX.Element {
                 return
             }
             void bridge.sendCaptures(captures, text).catch((err: unknown) => {
-                const message = err instanceof Error ? err.message : 'Failed to send your screenshots.'
+                const message = err instanceof Error ? err.message : 'Failed to send your attachments.'
                 setState((s) => setError(s, { kind: 'render-failed', message, recoverable: true }))
             })
             return
@@ -898,48 +998,89 @@ export function App(): React.JSX.Element {
         })
     }, [draft, staged, operatorMode, opEnvironment, runOperatorGoal, dictation, cancelActive])
 
-    /** Remove one staged screenshot from the carousel before sending. */
+    /** Remove one local attachment before sending. */
     const removeStaged = useCallback((id: string) => {
-        setStaged((prev) => prev.filter((s) => s.id !== id))
+        setStaged((prev) => prev.filter((attachment) => attachment.id !== id))
     }, [])
 
     /**
-     * Add image and PDF files from disk to the same carousel the screenshots
-     * use, so they send as one multi-image message. Images are staged directly;
-     * PDFs are rasterized page-by-page (a vision gateway can't read a raw PDF)
-     * and each page is staged as its own card.
+     * Add images, PDFs, and videos to the same composer carousel. PDFs become
+     * page images. Videos stay playable locally while a bounded chronological
+     * set of JPEG frames is prepared for the vision model.
      */
-    const onAddFiles = useCallback((files: FileList | null) => {
+    const onAddFiles = useCallback((files: FileList | readonly File[] | null) => {
         if (!files) return
+        let availableVideoSlots = Math.max(
+            0,
+            MAX_STAGED_VIDEOS - stagedRef.current.filter((attachment) => attachment.kind === 'video').length
+        )
         const stageImage = (dataUrl: string, name: string): void => {
             setStaged((prev) => [
                 ...prev,
                 {
-                    id: `file-${Date.now()}-${prev.length}-${name}`,
-                    capture: { dataUrl, thumbnailUrl: dataUrl, rect: { x: 0, y: 0, width: 0, height: 0 } },
+                    id: `file-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+                    kind: 'image',
+                    status: 'ready',
+                    captures: [{
+                        dataUrl,
+                        thumbnailUrl: dataUrl,
+                        rect: { x: 0, y: 0, width: 0, height: 0 }
+                    }],
                     name
                 }
             ])
         }
 
+        const stageVideo = (file: File): void => {
+            const id = `video-${Date.now()}-${Math.random().toString(36).slice(2)}`
+            const previewUrl = URL.createObjectURL(file)
+            setStaged((prev) => [
+                ...prev,
+                {
+                    id,
+                    kind: 'video',
+                    status: 'processing',
+                    captures: [],
+                    name: file.name,
+                    previewUrl
+                }
+            ])
+            void extractVideoFrames(file)
+                .then(({ captures, durationSeconds }) => {
+                    setStaged((prev) => prev.map((attachment) =>
+                        attachment.id === id
+                            ? { ...attachment, status: 'ready', captures, durationSeconds }
+                            : attachment
+                    ))
+                })
+                .catch((caught: unknown) => {
+                    setStaged((prev) => prev.filter((attachment) => attachment.id !== id))
+                    const detail = caught instanceof Error ? `: ${caught.message}` : ''
+                    setState((current) =>
+                        setError(current, {
+                            kind: 'render-failed',
+                            message: `Could not prepare the video "${file.name}"${detail}`,
+                            recoverable: true
+                        })
+                    )
+                })
+        }
+
         for (const file of Array.from(files)) {
-            const isPdf =
-                file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
+            const lowerName = file.name.toLowerCase()
+            const isPdf = file.type === 'application/pdf' || lowerName.endsWith('.pdf')
             if (isPdf) {
                 void renderPdfToImages(file)
                     .then((pages) => {
-                        pages.forEach((dataUrl, i) => {
-                            const label =
-                                pages.length > 1
-                                    ? `${file.name} p${i + 1}`
-                                    : file.name
+                        pages.forEach((dataUrl, index) => {
+                            const label = pages.length > 1 ? `${file.name} p${index + 1}` : file.name
                             stageImage(dataUrl, label)
                         })
                     })
-                    .catch((err: unknown) => {
-                        const detail = err instanceof Error ? `: ${err.message}` : ''
-                        setState((s) =>
-                            setError(s, {
+                    .catch((caught: unknown) => {
+                        const detail = caught instanceof Error ? `: ${caught.message}` : ''
+                        setState((current) =>
+                            setError(current, {
                                 kind: 'render-failed',
                                 message: `Could not read the PDF "${file.name}"${detail}`,
                                 recoverable: true
@@ -948,33 +1089,63 @@ export function App(): React.JSX.Element {
                     })
                 continue
             }
+
+            const isVideo =
+                file.type.startsWith('video/') || /\.(mp4|m4v|mov|webm|ogv)$/i.test(lowerName)
+            if (isVideo) {
+                if (availableVideoSlots <= 0) {
+                    setState((current) =>
+                        setError(current, {
+                            kind: 'render-failed',
+                            message: `Attach up to ${MAX_STAGED_VIDEOS} videos at a time so the AI request stays fast and reliable.`,
+                            recoverable: true
+                        })
+                    )
+                    continue
+                }
+                availableVideoSlots -= 1
+                stageVideo(file)
+                continue
+            }
+
             if (!file.type.startsWith('image/')) continue
             const reader = new FileReader()
             reader.onload = () => {
                 const dataUrl = String(reader.result ?? '')
                 if (dataUrl) stageImage(dataUrl, file.name)
             }
+            reader.onerror = () => {
+                setState((current) =>
+                    setError(current, {
+                        kind: 'render-failed',
+                        message: `Could not read the image "${file.name}".`,
+                        recoverable: true
+                    })
+                )
+            }
             reader.readAsDataURL(file)
         }
     }, [])
 
-    // Drag-and-drop an image (e.g. a screenshot from the Desktop) anywhere onto
-    // the app to stage it above the input. Electron would otherwise NAVIGATE to
-    // the dropped file (the "it just goes away" bug), so we preventDefault on the
-    // whole window and route image files through the same staging path.
+    // Prevent Electron from navigating to dropped files and route supported
+    // images, PDFs, and videos through the same local attachment pipeline.
     useEffect(() => {
-        const onDragOver = (e: DragEvent): void => {
-            if (Array.from(e.dataTransfer?.types ?? []).includes('Files')) e.preventDefault()
+        const onDragOver = (event: DragEvent): void => {
+            if (Array.from(event.dataTransfer?.types ?? []).includes('Files')) event.preventDefault()
         }
-        const onDrop = (e: DragEvent): void => {
-            const files = e.dataTransfer?.files
-            const hasImage =
+        const onDrop = (event: DragEvent): void => {
+            const files = event.dataTransfer?.files
+            const hasSupportedFile =
                 !!files &&
                 files.length > 0 &&
-                Array.from(files).some((f) => f.type.startsWith('image/') || f.type === 'application/pdf')
-            // Always prevent the default file navigation; only stage images/PDFs.
-            e.preventDefault()
-            if (hasImage) onAddFiles(files!)
+                Array.from(files).some((file) =>
+                    file.type.startsWith('image/') ||
+                    file.type.startsWith('video/') ||
+                    file.type === 'application/pdf' ||
+                    /\.(pdf|mp4|m4v|mov|webm|ogv)$/i.test(file.name)
+                )
+            event.preventDefault()
+            if (hasSupportedFile) onAddFiles(files!)
         }
         window.addEventListener('dragover', onDragOver)
         window.addEventListener('drop', onDrop)
@@ -1035,8 +1206,20 @@ export function App(): React.JSX.Element {
                             id: it.id,
                             title:
                                 it.goalText && it.goalText.trim().length > 0
-                                    ? it.goalText
+                                    ? compactSidebarText(it.goalText, 54)
                                     : 'Untitled task',
+                            description:
+                                it.status === 'running'
+                                    ? 'Working on this task…'
+                                    : it.status === 'completed'
+                                        ? 'Task completed'
+                                        : it.status === 'paused' || it.status === 'awaiting-help'
+                                            ? 'Waiting to continue'
+                                            : it.status === 'failed' || it.status === 'budget-exhausted'
+                                                ? 'Task needs attention'
+                                                : it.status === 'stopped'
+                                                    ? 'Task stopped'
+                                                    : 'Ready to continue',
                             updatedAt: it.updatedAt,
                             turnCount: 0
                         }))
@@ -1062,8 +1245,9 @@ export function App(): React.JSX.Element {
     }, [])
 
     const onNewSession = useCallback(() => {
-        // A fresh session closes the right-hand code panel too.
+        // A fresh session closes the right-hand code panel and template picker.
         setCodeArtifact(null)
+        setShowTaskTemplates(false)
         lastAutoOpenedTurnRef.current = null
         // Operator mode: clear the operator workspace (hide, not delete) and stop
         // any running task so the next goal starts fresh.
@@ -1075,10 +1259,10 @@ export function App(): React.JSX.Element {
             setDraft('')
             setOpActiveProvider(null)
             setOpActiveMode(null)
-            setOpenSessionId(null)
+            setOpSessionId(null)
             setOpSteps([])
             refreshOpHistory()
-            if (window.innerWidth <= 600) setNavOpen(false)
+            if (window.innerWidth <= NAV_OVERLAY_BREAKPOINT) setNavOpen(false)
             return
         }
         const bridge = getChatBridge()
@@ -1086,12 +1270,12 @@ export function App(): React.JSX.Element {
             return
         }
         void bridge.newSession().then(() => refreshHistory()).catch(() => undefined)
-        setOpenSessionId(null)
+        setChatSessionId(null)
         setState(initialConversationState([]))
         setDraft('')
         setSummary(null)
         setStaged([])
-        if (window.innerWidth <= 600) setNavOpen(false)
+        if (window.innerWidth <= NAV_OVERLAY_BREAKPOINT) setNavOpen(false)
     }, [operatorMode, refreshHistory, refreshOpHistory])
 
     const onOpenSession = useCallback(
@@ -1102,9 +1286,16 @@ export function App(): React.JSX.Element {
             setShowInstructions(false)
             // Keep the sidebar open on wide layouts (it's a persistent pane); only
             // auto-close on the narrow/mobile overlay where it covers the chat.
-            if (window.innerWidth <= 600) setNavOpen(false)
-            setOpenSessionId(id)
+            if (window.innerWidth <= NAV_OVERLAY_BREAKPOINT) setNavOpen(false)
+
+            // The first rail row can be a synthesized view of the live in-memory
+            // session, newer than the archived copy with the same id. Selecting it
+            // is navigation-only; never ask main to restore the stale archive.
+            const activeId = operatorMode ? opSessionId : chatSessionId
+            if (id === activeId) return
+
             if (operatorMode) {
+                setOpSessionId(id)
                 const op = getOperatorBridge()
                 if (op && typeof op.openSession === 'function') {
                     void op
@@ -1117,17 +1308,21 @@ export function App(): React.JSX.Element {
                 }
                 return
             }
+            setChatSessionId(id)
             const bridge = getChatBridge()
             if (bridge && typeof bridge.openSession === 'function') {
                 void bridge.openSession(id).then(() => refreshHistory()).catch(() => undefined)
             }
         },
-        [operatorMode, refreshHistory]
+        [operatorMode, opSessionId, chatSessionId, refreshHistory]
     )
 
     const toggleSettings = useCallback(() => {
         setShowSettings((v) => !v)
         setShowInstructions(false)
+        // Settings lives in the rail footer; close the narrow overlay so the
+        // panel it opens is immediately visible rather than hidden underneath.
+        if (window.innerWidth <= NAV_OVERLAY_BREAKPOINT) setNavOpen(false)
     }, [])
 
     const toggleInstructions = useCallback(() => {
@@ -1154,108 +1349,129 @@ export function App(): React.JSX.Element {
             setMenu(null)
             // Delete from whichever store owns the active mode: operator tasks go
             // through the operator bridge, copilot chats through the chat bridge.
-            const deletingOpen = id === openSessionId
+            const deletingOpen = id === (operatorMode ? opSessionId : chatSessionId)
             if (operatorMode) {
                 const op = getOperatorBridge()
-                if (op && typeof op.deleteSessions === 'function') {
-                    void op
-                        .deleteSessions([id])
-                        .then(() => refreshOpHistory())
-                        .catch(() => undefined)
-                }
-                // Deleting the chat currently on screen clears the operator view
-                // and the right-hand code panel.
-                if (deletingOpen) {
-                    void op?.stopSession?.().catch(() => undefined)
-                    setOpState(initialConversationState([]))
-                    setOpActiveProvider(null)
-                    setOpActiveMode(null)
-                    setOpenSessionId(null)
-                    setOpSteps([])
-                    setCodeArtifact(null)
-                    lastAutoOpenedTurnRef.current = null
-                }
+                if (!op || typeof op.deleteSessions !== 'function') return
+                void op
+                    .deleteSessions([id])
+                    .then(async () => {
+                        setRecentTaskTemplates(clearRecentTaskTemplates())
+                        if (deletingOpen) {
+                            setOpState(initialConversationState([]))
+                            setOpActiveProvider(null)
+                            setOpActiveMode(null)
+                            setOpSessionId(null)
+                            setOpSteps([])
+                            setCodeArtifact(null)
+                            lastAutoOpenedTurnRef.current = null
+                        }
+                        await refreshOpHistory()
+                    })
+                    .catch((error: unknown) => {
+                        const detail = error instanceof Error ? error.message : String(error)
+                        setOpState((state) =>
+                            setError(state, {
+                                kind: 'render-failed',
+                                message: `Could not delete operator history: ${detail}`,
+                                recoverable: true
+                            })
+                        )
+                    })
                 return
             }
             const bridge = getChatBridge()
-            if (bridge && typeof bridge.deleteSessions === 'function') {
-                void bridge.deleteSessions([id]).then(() => refreshHistory()).catch(() => undefined)
-            }
-            // Deleting the chat currently on screen clears the copilot view, its
-            // staged shots/summary, and the right-hand code panel.
-            if (deletingOpen) {
-                setOpenSessionId(null)
-                setState(initialConversationState([]))
-                setSummary(null)
-                setStaged([])
-                setCodeArtifact(null)
-                lastAutoOpenedTurnRef.current = null
-            }
+            if (!bridge || typeof bridge.deleteSessions !== 'function') return
+            void bridge
+                .deleteSessions([id])
+                .then(async () => {
+                    if (deletingOpen) {
+                        // Main replaces a deleted active chat with a fresh session
+                        // and emits it before this invoke resolves. Read that source
+                        // of truth as well so this continuation cannot overwrite its
+                        // valid id with null if event delivery and promise settlement
+                        // happen in the opposite order.
+                        const replacement = await bridge.getSession().catch(() => null)
+                        if (replacement) {
+                            setChatSessionId(replacement.id || null)
+                            setState(initialConversationState(replacement.turns ?? []))
+                            setSummary(replacement.summary ?? null)
+                        }
+                        setStaged([])
+                        setCodeArtifact(null)
+                        lastAutoOpenedTurnRef.current = null
+                    }
+                    await refreshHistory()
+                })
+                .catch((error: unknown) => {
+                    const detail = error instanceof Error ? error.message : String(error)
+                    setState((state) =>
+                        setError(state, {
+                            kind: 'render-failed',
+                            message: `Could not delete chat history: ${detail}`,
+                            recoverable: true
+                        })
+                    )
+                })
         },
-        [operatorMode, openSessionId, refreshHistory, refreshOpHistory]
+        [operatorMode, opSessionId, chatSessionId, refreshHistory, refreshOpHistory]
     )
 
     // The visible conversation + history depend on the active mode. Copilot and
-    // operator each keep their own; toggling swaps which one shows.
+    // operator each keep their own; toggling swaps which one shows. The current
+    // in-memory session is synthesized into the rail because disk history lists
+    // only archives.
     const conv = operatorMode ? opState : state
     const setConv = operatorMode ? setOpState : setState
-    const shownHistory = operatorMode ? opHistory : history
+    const archivedHistory = operatorMode ? opHistory : history
+    const activeSessionId = operatorMode ? opSessionId : chatSessionId
+    const latestTurn = conv.turns.at(-1)
+    const latestStep = opSteps.at(-1)
+    const preparingAttachments = staged.some((attachment) => attachment.status === 'processing')
+    // The second line is live process status only. Completed/idle chats stay a
+    // compact single row and do not reserve space for placeholder copy.
+    const currentDescription = conv.pending
+        ? operatorMode
+            ? compactSidebarText(latestStep?.sub ?? latestStep?.label ?? 'Working on your task…')
+            : 'Thinking through your request…'
+        : ''
+    const hasCurrentContent = conv.turns.length > 0 || conv.pending || (operatorMode && opSteps.length > 0)
+    const currentItem: SessionListItem | null =
+        activeSessionId && hasCurrentContent
+            ? {
+                id: activeSessionId,
+                title: titleFromTurns(
+                    conv.turns,
+                    operatorMode ? 'Untitled task' : summary?.inferredIntent ?? 'Untitled chat'
+                ),
+                description: currentDescription,
+                updatedAt:
+                    latestTurn?.createdAt ??
+                    archivedHistory.find((item) => item.id === activeSessionId)?.updatedAt ??
+                    new Date().toISOString(),
+                turnCount: conv.turns.length
+            }
+            : null
+    const shownHistory = currentItem
+        ? [currentItem, ...archivedHistory.filter((item) => item.id !== currentItem.id)]
+        : archivedHistory
 
     return (
         <CodePanelContext.Provider value={codePanelApi}>
             <div className={`glass-app${navOpen ? '' : ' glass-app--navhidden'}${codeArtifact ? ' glass-app--codeopen' : ''}`}>
-                <aside className={`glass-nav${navOpen ? ' glass-nav--open' : ''}`}>
-                    <div className="glass-nav__top">
-                        <button
-                            type="button"
-                            className="glass-iconbtn glass-iconbtn--icon"
-                            onClick={() => setNavOpen(false)}
-                            aria-label="Collapse chats"
-                            title="Collapse chats"
-                        >
-                            <ChevronIcon open={true} />
-                        </button>
-                    </div>
-                    <div className="glass-nav__modes">
-                        <button
-                            type="button"
-                            className={`glass-modebtn${operatorMode ? ' glass-modebtn--on' : ''}`}
-                            onClick={() => setOperatorMode((v) => !v)}
-                            aria-pressed={operatorMode}
-                            title={
-                                operatorMode
-                                    ? 'Computer or Browser Use is ON (autonomous agent). Click to switch back to Smart Copilot.'
-                                    : 'Switch to Computer or Browser Use (an autonomous agent that controls the browser or your Mac).'
-                            }
-                        >
-                            Computer or Browser Use
-                        </button>
-                    </div>
-                    <div className="glass-nav__list">
-                        {shownHistory.length === 0 ? null : (
-                            groupHistoryByDate(shownHistory).map((group) => (
-                                <div className="glass-history__group" key={group.label}>
-                                    <div className="glass-history__group-label">{group.label}</div>
-                                    {group.items.map((item) => (
-                                        <button
-                                            type="button"
-                                            key={item.id}
-                                            className="glass-history__item"
-                                            onClick={() => onOpenSession(item.id)}
-                                            onContextMenu={(e) => onChatContextMenu(e, item.id)}
-                                        >
-                                            <span className="glass-history__text">
-                                                <span className="glass-history__item-title">
-                                                    {item.title}
-                                                </span>
-                                            </span>
-                                        </button>
-                                    ))}
-                                </div>
-                            ))
-                        )}
-                    </div>
-                </aside>
+                <ChatSidebar
+                    items={shownHistory}
+                    activeId={activeSessionId}
+                    running={conv.pending}
+                    operatorMode={operatorMode}
+                    settingsOpen={showSettings}
+                    onCollapse={() => setNavOpen(false)}
+                    onNewSession={onNewSession}
+                    onToggleOperator={() => setOperatorMode((value) => !value)}
+                    onOpenSession={onOpenSession}
+                    onChatContextMenu={onChatContextMenu}
+                    onToggleSettings={toggleSettings}
+                />
 
                 {navOpen && <div className="glass-nav__scrim" onClick={() => setNavOpen(false)} />}
 
@@ -1272,6 +1488,13 @@ export function App(): React.JSX.Element {
                             </button>
                         </div>
                     </>
+                )}
+
+                {showVideoRecorder && (
+                    <VideoRecorder
+                        onRecorded={(file) => onAddFiles([file])}
+                        onClose={() => setShowVideoRecorder(false)}
+                    />
                 )}
 
                 <div className="glass-main">
@@ -1335,14 +1558,6 @@ export function App(): React.JSX.Element {
                             >
                                 <PinIcon />
                             </button>
-                            <button
-                                type="button"
-                                className="glass-iconbtn"
-                                onClick={onNewSession}
-                                title={operatorMode ? 'Start a new operator task' : 'Start a new chat'}
-                            >
-                                New
-                            </button>
                             {!operatorMode && (
                                 <button
                                     type="button"
@@ -1353,14 +1568,6 @@ export function App(): React.JSX.Element {
                                     Instructions
                                 </button>
                             )}
-                            <button
-                                type="button"
-                                className="glass-iconbtn"
-                                onClick={toggleSettings}
-                                title="Settings: API keys, models, and preferences"
-                            >
-                                Settings
-                            </button>
                         </div>
                     </header>
 
@@ -1414,7 +1621,9 @@ export function App(): React.JSX.Element {
                                                         key={ci}
                                                         className="glass-thumb"
                                                         src={cap.thumbnailUrl}
-                                                        alt={`Captured screen region ${ci + 1}`}
+                                                        alt={cap.videoFrame
+                                                            ? `Video frame ${cap.videoFrame.index} of ${cap.videoFrame.count}`
+                                                            : `Captured screen region ${ci + 1}`}
                                                     />
                                                 ))}
                                             </div>
@@ -1435,22 +1644,27 @@ export function App(): React.JSX.Element {
                             step, a spinner trailing while the agent works). */}
                             {operatorMode && (opSteps.length > 0 || conv.pending) && (
                                 <div className="glass-steps" role="list" aria-label="Operator steps">
-                                    {opSteps.map((s) => (
-                                        <div
-                                            key={s.id}
-                                            role="listitem"
-                                            className={`glass-step${s.kind === 'failure' ? ' glass-step--error' : ''}`}
-                                        >
-                                            <span className="glass-step__icon">
-                                                <CheckIcon />
-                                            </span>
-                                            <span className="glass-step__text">
-                                                <span className="glass-step__label">{s.label}</span>
-                                                {s.sub && <span className="glass-step__sub">{s.sub}</span>}
-                                                {s.meta && <span className="glass-step__meta">{s.meta}</span>}
-                                            </span>
-                                        </div>
-                                    ))}
+                                    {opSteps.map((s) => {
+                                        const failed =
+                                            s.kind === 'failure' ||
+                                            (s.status !== undefined && s.status !== 'success')
+                                        return (
+                                            <div
+                                                key={s.id}
+                                                role="listitem"
+                                                className={`glass-step${failed ? ' glass-step--error' : ''}`}
+                                            >
+                                                <span className="glass-step__icon" aria-hidden="true">
+                                                    {failed ? '×' : <CheckIcon />}
+                                                </span>
+                                                <span className="glass-step__text">
+                                                    <span className="glass-step__label">{s.label}</span>
+                                                    {s.sub && <span className="glass-step__sub">{s.sub}</span>}
+                                                    {s.meta && <span className="glass-step__meta">{s.meta}</span>}
+                                                </span>
+                                            </div>
+                                        )
+                                    })}
                                     {conv.pending && (
                                         <div className="glass-step glass-step--active" role="listitem">
                                             <span className="glass-step__icon">
@@ -1484,11 +1698,11 @@ export function App(): React.JSX.Element {
                                         {confirmation.highRisk ? 'Confirm high-risk action' : 'Confirm action'}
                                     </div>
                                     <div className="glass-confirm__action">
-                                        {describeAction(confirmation.action)}
+                                        {describeConfirmationAction(confirmation.action)}
                                     </div>
-                                    {confirmation.rationale.trim().length > 0 && (
-                                        <div className="glass-confirm__why">{confirmation.rationale}</div>
-                                    )}
+                                    <div className="glass-confirm__why">
+                                        Review this exact action before allowing it to run.
+                                    </div>
                                     <div className="glass-confirm__buttons">
                                         <button
                                             type="button"
@@ -1525,28 +1739,47 @@ export function App(): React.JSX.Element {
                     )}
 
                     {!showSettings && !showInstructions && staged.length > 0 && (
-                        <div className="glass-carousel" aria-label="Staged screenshots">
-                            {staged.map((shot) => (
-                                <div className="glass-shot" key={shot.id}>
-                                    <button
-                                        type="button"
-                                        className="glass-shot__remove"
-                                        onClick={() => removeStaged(shot.id)}
-                                        aria-label={`Remove ${shot.name}`}
-                                        title="Remove"
+                        <div className="glass-carousel" aria-label="Staged attachments">
+                            {staged.map((attachment) => {
+                                const thumbnail = attachment.captures[0]?.thumbnailUrl
+                                return (
+                                    <div
+                                        className={`glass-shot${attachment.kind === 'video' ? ' glass-shot--video' : ''}`}
+                                        key={attachment.id}
                                     >
-                                        ×
-                                    </button>
-                                    <div className="glass-shot__thumb">
-                                        <img
-                                            src={shot.capture.thumbnailUrl}
-                                            alt={shot.name}
-                                            draggable={false}
-                                        />
+                                        <button
+                                            type="button"
+                                            className="glass-shot__remove"
+                                            onClick={() => removeStaged(attachment.id)}
+                                            aria-label={`Remove ${attachment.name}`}
+                                            title="Remove"
+                                        >
+                                            ×
+                                        </button>
+                                        <div className="glass-shot__thumb">
+                                            {attachment.kind === 'video' && attachment.previewUrl ? (
+                                                <video src={attachment.previewUrl} controls preload="metadata" playsInline />
+                                            ) : thumbnail ? (
+                                                <img src={thumbnail} alt={attachment.name} draggable={false} />
+                                            ) : null}
+                                            {attachment.status === 'processing' && (
+                                                <div className="glass-shot__processing" role="status">
+                                                    <span className="glass-spinner" />
+                                                    Sampling frames…
+                                                </div>
+                                            )}
+                                        </div>
+                                        <div className="glass-shot__name">{finderName(attachment.name)}</div>
+                                        {attachment.kind === 'video' && (
+                                            <div className="glass-shot__meta">
+                                                {attachment.status === 'ready'
+                                                    ? `${formatMediaDuration(attachment.durationSeconds ?? 0)} · ${attachment.captures.length} AI frames`
+                                                    : 'Preparing for AI'}
+                                            </div>
+                                        )}
                                     </div>
-                                    <div className="glass-shot__name">{finderName(shot.name)}</div>
-                                </div>
-                            ))}
+                                )
+                            })}
                         </div>
                     )}
 
@@ -1602,19 +1835,94 @@ export function App(): React.JSX.Element {
                             </div>
                             <div className="glass-composer__bar">
                                 <div className="glass-composer__left">
+                                    {operatorMode && (
+                                        <div className="glass-template-wrap">
+                                            {showTaskTemplates && (
+                                                <>
+                                                    <div
+                                                        className="glass-model-backdrop"
+                                                        onClick={() => setShowTaskTemplates(false)}
+                                                    />
+                                                    <div className="glass-template-menu" role="menu" aria-label="Task templates">
+                                                        <div className="glass-template-section">Starters</div>
+                                                        {BUILT_IN_TASK_TEMPLATES.map((template) => (
+                                                            <button
+                                                                key={template.id}
+                                                                type="button"
+                                                                className="glass-template-item"
+                                                                onClick={() => applyTaskTemplate(template)}
+                                                            >
+                                                                <span className="glass-template-item__label">{template.label}</span>
+                                                                <span className="glass-template-item__description">
+                                                                    {template.description}
+                                                                </span>
+                                                            </button>
+                                                        ))}
+                                                        {recentTaskTemplates.length > 0 && (
+                                                            <>
+                                                                <div className="glass-template-section glass-template-section--recent">
+                                                                    Recent
+                                                                </div>
+                                                                {recentTaskTemplates.map((template) => (
+                                                                    <button
+                                                                        key={template.id}
+                                                                        type="button"
+                                                                        className="glass-template-item"
+                                                                        onClick={() => applyTaskTemplate(template)}
+                                                                        title={template.goal}
+                                                                    >
+                                                                        <span className="glass-template-item__label">
+                                                                            {template.label}
+                                                                        </span>
+                                                                        <span className="glass-template-item__description">
+                                                                            {template.environment === 'browser'
+                                                                                ? 'Browser task'
+                                                                                : template.environment === 'local'
+                                                                                    ? 'Mac task'
+                                                                                    : 'Sandbox task'}
+                                                                        </span>
+                                                                    </button>
+                                                                ))}
+                                                            </>
+                                                        )}
+                                                    </div>
+                                                </>
+                                            )}
+                                            <button
+                                                type="button"
+                                                className="glass-template-btn"
+                                                onClick={() => setShowTaskTemplates((value) => !value)}
+                                                aria-expanded={showTaskTemplates}
+                                                aria-haspopup="menu"
+                                                title="Start from a reusable task template"
+                                            >
+                                                Templates
+                                                <CaretIcon open={showTaskTemplates} />
+                                            </button>
+                                        </div>
+                                    )}
                                     <button
                                         type="button"
                                         className="glass-addfile"
                                         onClick={() => addFileRef.current?.click()}
-                                        aria-label="Add image files"
-                                        title="Attach images or a PDF"
+                                        aria-label="Add images, PDFs, or videos"
+                                        title="Attach images, PDFs, or videos"
                                     >
                                         <PaperclipIcon />
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="glass-addfile"
+                                        onClick={() => setShowVideoRecorder(true)}
+                                        aria-label="Record a video"
+                                        title="Record a video"
+                                    >
+                                        <VideoCameraIcon />
                                     </button>
                                     <input
                                         ref={addFileRef}
                                         type="file"
-                                        accept="image/*,application/pdf,.pdf"
+                                        accept="image/*,video/*,application/pdf,.pdf,.mp4,.m4v,.mov,.webm,.ogv"
                                         multiple
                                         className="glass-file-input"
                                         onChange={(e) => {
@@ -1791,8 +2099,9 @@ export function App(): React.JSX.Element {
                                             type="button"
                                             className="glass-send"
                                             onClick={submit}
-                                            aria-label="Send message"
-                                            title="Send"
+                                            disabled={preparingAttachments}
+                                            aria-label={preparingAttachments ? 'Preparing video frames' : 'Send message'}
+                                            title={preparingAttachments ? 'Preparing video frames for the AI…' : 'Send'}
                                         >
                                             <SendIcon />
                                         </button>

@@ -229,6 +229,28 @@ export class SessionStore {
         return trimmed.length > 60 ? `${trimmed.slice(0, 60)}…` : trimmed
     }
 
+    /** Derive a compact, local-only description for the history rail. */
+    private descriptionFor(session: Session): string {
+        const lastCompleted = session.summary.completedSteps.at(-1)
+        const lastAssistant = [...session.turns]
+            .reverse()
+            .find(
+                (turn) =>
+                    turn.role === 'assistant' &&
+                    typeof turn.text === 'string' &&
+                    turn.text.trim().length > 0
+            )?.text
+        const raw = lastCompleted ?? lastAssistant ?? session.summary.inferredIntent
+        const compact = (raw ?? '')
+            .replace(/[`*_>#\[\]]/g, '')
+            .replace(/\s+/g, ' ')
+            .trim()
+        if (compact.length === 0) {
+            return session.turns.length === 1 ? '1 message' : `${session.turns.length} messages`
+        }
+        return compact.length > 120 ? `${compact.slice(0, 120)}…` : compact
+    }
+
     /**
      * List past (archived) sessions, newest first, for the chat-history panel.
      * Reads every `sessions/<id>.json` file (excluding `current.json` and temp
@@ -253,6 +275,7 @@ export class SessionStore {
                 items.push({
                     id: session.id,
                     title: this.titleFor(session),
+                    description: this.descriptionFor(session),
                     updatedAt: session.updatedAt,
                     turnCount: session.turns.length
                 })
