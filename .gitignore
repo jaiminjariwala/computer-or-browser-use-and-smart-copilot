@@ -9,3 +9,4 @@ release
 .env.local
 .vite
 coverage
+artifacts/operator-evals
