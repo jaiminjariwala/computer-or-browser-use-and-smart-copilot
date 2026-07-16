@@ -46,6 +46,8 @@ export interface SessionFs {
     rename(oldPath: string, newPath: string): Promise<void>
     mkdir(path: string, options: { recursive: true }): Promise<unknown>
     readdir(path: string): Promise<string[]>
+    /** Optional lightweight metadata lookup used to bound memory candidate reads. */
+    stat?(path: string): Promise<{ mtimeMs: number }>
     rm(path: string, options: { force: true }): Promise<void>
 }
 
@@ -170,21 +172,49 @@ export class SessionStore {
     }
 
     /**
-     * List archived sessions, newest first, for the session-history panel
-     * (`session:list`). Reads every `sessions/<id>.json` file (excluding
-     * `current.json` and temp files), tolerating corrupt entries by skipping them.
+     * List archived sessions, newest first, for the session-history panel. When
+     * `limit` is supplied (the memory path), rank archive filenames by lightweight
+     * filesystem metadata and decode at most that many full session bodies.
+     * Corrupt entries are skipped.
      */
-    async listSessions(): Promise<SessionListItem[]> {
+    async listSessions(limit?: number): Promise<SessionListItem[]> {
         let files: string[]
         try {
-            files = await this.fs.readdir(this.sessionsDir)
+            files = (await this.fs.readdir(this.sessionsDir)).filter(
+                (file) =>
+                    file.endsWith('.json') &&
+                    file !== CURRENT_FILENAME &&
+                    !file.endsWith('.tmp')
+            )
         } catch {
             return []
         }
+
+        if (limit !== undefined) {
+            const boundedLimit = Math.max(0, Math.floor(limit))
+            if (boundedLimit === 0) return []
+            if (files.length > boundedLimit && this.fs.stat) {
+                const ranked = await Promise.all(
+                    files.map(async (file) => {
+                        try {
+                            const metadata = await this.fs.stat!(join(this.sessionsDir, file))
+                            return { file, mtimeMs: metadata.mtimeMs }
+                        } catch {
+                            return { file, mtimeMs: 0 }
+                        }
+                    })
+                )
+                files = ranked
+                    .sort((a, b) => b.mtimeMs - a.mtimeMs || a.file.localeCompare(b.file))
+                    .slice(0, boundedLimit)
+                    .map(({ file }) => file)
+            } else {
+                files = files.slice(0, boundedLimit)
+            }
+        }
+
         const items: SessionListItem[] = []
         for (const file of files) {
-            if (!file.endsWith('.json')) continue
-            if (file === CURRENT_FILENAME || file.endsWith('.tmp')) continue
             try {
                 const raw = await this.fs.readFile(join(this.sessionsDir, file), 'utf-8')
                 const session = this.codec.decode(raw)
@@ -217,10 +247,47 @@ export class SessionStore {
         }
     }
 
-    /** Delete one or more archived sessions by id (best-effort per id). */
-    async deleteSessions(ids: string[]): Promise<void> {
-        await Promise.all(
-            ids.map((id) => this.fs.rm(this.archivePath(id), { force: true }).catch(() => undefined))
-        )
+    /**
+     * Delete archived sessions after every already-queued save/archive has
+     * settled. The serialized operation decodes the latest `current.json` and
+     * removes it only when its id is among the requested deletions. Filesystem
+     * errors propagate so the UI cannot report a deletion that did not happen.
+     */
+    deleteSessions(ids: readonly string[]): Promise<void> {
+        const uniqueIds = [...new Set(ids)]
+        const run = this.writeChain.then(async () => {
+            let firstFailure: unknown
+            const remove = async (path: string): Promise<void> => {
+                try {
+                    await this.fs.rm(path, { force: true })
+                } catch (error) {
+                    firstFailure ??= error
+                }
+            }
+
+            let shouldClearCurrent = false
+            try {
+                // Decide inside the serialized operation, after every earlier
+                // save. Never carry a stale "was active" boolean across loop
+                // quiescence: a replacement session may now own current.json.
+                const raw = await this.fs.readFile(this.currentPath, 'utf-8')
+                const current = this.codec.decode(raw)
+                shouldClearCurrent = uniqueIds.includes(current.id)
+            } catch {
+                // Missing/corrupt current state cannot be associated safely.
+            }
+
+            for (const id of uniqueIds) {
+                await remove(this.archivePath(id))
+                await remove(`${this.archivePath(id)}.tmp`)
+            }
+            if (shouldClearCurrent) {
+                await remove(this.currentPath)
+                await remove(this.tempPath)
+            }
+            if (firstFailure) throw firstFailure
+        })
+        this.writeChain = run.catch(() => undefined)
+        return run
     }
 }

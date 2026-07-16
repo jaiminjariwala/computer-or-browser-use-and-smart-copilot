@@ -11,6 +11,21 @@ import type { Action } from './action'
 import type { Observation, TokenUsage, TrajectoryStep, TrajectorySummary } from './trajectory'
 
 /**
+ * A compact, sanitized lesson recalled from a related completed session.
+ *
+ * Memories are derived from local session archives and intentionally exclude
+ * screenshots, raw observations, typed text, provider credentials, and full
+ * trajectories. They are optional hints only; the current screen and goal stay
+ * authoritative.
+ */
+export interface PriorSessionMemory {
+    goalText: string
+    inferredProgress: string
+    completedSubSteps: string[]
+    updatedAt: string
+}
+
+/**
  * The bounded context sent to a Model_Provider on each Reasoning_Step. This is
  * derived, not stored, and never includes the full Trajectory (Req 3.5, 4.3).
  */
@@ -20,6 +35,8 @@ export interface ReasoningContext {
     summary: TrajectorySummary
     /** Last K steps only — never the full trajectory (Req 3.5, 4.3). */
     recentSteps: TrajectoryStep[]
+    /** Related successful-session summaries recalled from the local archive. */
+    priorMemories?: PriorSessionMemory[]
     currentObservation: Observation
     /**
      * A short description of the Execution_Environment the agent is operating

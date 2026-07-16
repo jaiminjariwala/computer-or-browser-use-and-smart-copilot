@@ -31,7 +31,8 @@ import {
     PlaywrightBrowserEnvironment,
     EnvironmentRouter
 } from '../environment'
-import { Summarizer } from '../summarizer'
+import { Summarizer, summarizeTrajectorySteps } from '../summarizer'
+import { SessionMemory } from '../memory'
 import { createElectronPermissionProbe, getPermissionSnapshot } from '../permissions'
 import { createModelProvider } from '../providers/model-provider'
 
@@ -67,6 +68,8 @@ export interface OperatorServices {
     configStore: ConfigStore
     /** Persisted session store (restore / archive / flush). */
     sessions: SessionStore
+    /** Evict deleted archives from in-memory recall caches. */
+    forgetSessionMemories: (ids: readonly string[]) => void
     /** Session / Trajectory Manager (records Goal, autonomy, budget, steps). */
     sessionManager: SessionManager
     /** The perceive→reason→act orchestrator. */
@@ -109,6 +112,7 @@ export function createOperatorServices(options: OperatorServiceOptions = {}): Op
 
     const configStore = new ConfigStore()
     const sessions = new SessionStore({ userDataDir: app.getPath('userData') })
+    const memory = new SessionMemory(sessions)
 
     const permissionProbe = createElectronPermissionProbe()
     const readPermissions = (): PermissionSnapshot => getPermissionSnapshot(permissionProbe)
@@ -134,17 +138,19 @@ export function createOperatorServices(options: OperatorServiceOptions = {}): Op
             // Drive summarization off appended steps (Req 4.2).
             onStepAppended: (step, session) => summarizer?.onStepAppended(step, session),
             // Preserve the prior session when a new one replaces it (Req 18.4).
+            // Remember it synchronously so the next run can recall it even while
+            // the serialized archive write is still queued.
             onArchive: (session) => {
+                memory.remember(session)
                 void sessions.archive(session)
             }
         }
     })
 
-    // The trajectory fold is a seam: no model-backed operator-trajectory
-    // summarizer exists yet, so the fold is a monotonic passthrough. The
-    // reasoning context stays bounded regardless via `keepRecent` (Req 3.5, 4.3).
+    // Fold older successful steps locally: this keeps long-run context useful
+    // without spending a second model call or persisting raw screenshots/typed text.
     summarizer = new Summarizer({
-        summarize: async (_steps, prev) => prev,
+        summarize: async (steps, prev) => summarizeTrajectorySteps(steps, prev),
         store: sessionManager
     })
 
@@ -186,10 +192,19 @@ export function createOperatorServices(options: OperatorServiceOptions = {}): Op
 
     // The loop's reasoning entry point rebuilds the ProviderChain per step so
     // provider/config edits take effect on the next Reasoning_Step (Req 21.3, 21.4).
+    // Related completed-session summaries are loaded from local storage once per
+    // goal and injected as bounded, untrusted hints; the current goal/screen
+    // always remain authoritative.
     const reasoning: LoopReasoning = {
         reason: async (ctx: ReasoningContext): Promise<RoutedOutcome> => {
+            const priorMemories = await memory.recall(
+                ctx.goal,
+                sessionManager.getSession()?.id
+            )
+            const enrichedContext: ReasoningContext =
+                priorMemories.length > 0 ? { ...ctx, priorMemories } : ctx
             const providers = await buildProviderChain()
-            return new ProviderChainRouter(providers).reason(ctx)
+            return new ProviderChainRouter(providers).reason(enrichedContext)
         }
     }
 
@@ -307,6 +322,7 @@ export function createOperatorServices(options: OperatorServiceOptions = {}): Op
         windows,
         configStore,
         sessions,
+        forgetSessionMemories: (ids: readonly string[]) => memory.forget(ids),
         sessionManager,
         loop: agentLoop,
         safety,

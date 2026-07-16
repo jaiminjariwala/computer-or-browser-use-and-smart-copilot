@@ -1,4 +1,5 @@
 import type {
+    Action,
     Observation,
     ReasoningContext,
     TrajectoryStep,
@@ -47,6 +48,120 @@ export type SummarizeFn = (
     steps: TrajectoryStep[],
     prev: TrajectorySummary
 ) => Promise<TrajectorySummary>
+
+/** Maximum length of one persisted summary sentence after redaction. */
+export const SUMMARY_TEXT_LIMIT = 180
+/** Hard cap for successful action categories retained in an in-session summary. */
+export const MAX_SUMMARY_SUB_STEPS = 12
+
+const SAFE_SUMMARY_ITEMS = new Set([
+    'Task completed successfully.',
+    'Clicked the intended target.',
+    'Opened the target context menu.',
+    'Opened the intended target.',
+    'Dragged the intended item to its destination.',
+    'Entered text into the active field.',
+    'Pressed a keyboard shortcut.',
+    'Scrolled the current view.'
+])
+
+/**
+ * Remove common credential-shaped values before text is retained as memory.
+ * This is defense in depth: typed Action payloads and screenshots are never
+ * copied into summaries in the first place.
+ */
+export function sanitizeMemoryText(
+    value: string,
+    limit: number = SUMMARY_TEXT_LIMIT
+): string {
+    const redacted = value
+        .replace(/\bBearer\s+[^\s,;]+/gi, 'Bearer [redacted]')
+        .replace(
+            /\b(api[-_ ]?key|access[-_ ]?token|auth(?:orization)?|password|secret)\b\s*[:=]\s*[^\s,;]+/gi,
+            '$1=[redacted]'
+        )
+        .replace(/([?&](?:api_?key|token|secret|password)=)[^&\s]+/gi, '$1[redacted]')
+        .replace(/\b\d{3}-\d{2}-\d{4}\b/g, '[redacted identifier]')
+        .replace(/\b(?:\d[ -]*?){13,19}\b/g, '[redacted number]')
+        .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[redacted email]')
+        .replace(/\b[A-Za-z0-9_-]{32,}\b/g, '[redacted]')
+        .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+
+    if (limit <= 0) return ''
+    return redacted.length <= limit ? redacted : `${redacted.slice(0, limit - 1).trimEnd()}…`
+}
+
+/**
+ * Deterministically condense successful steps into a small allowlisted set of
+ * action categories. Free-form model rationales, completion summaries, typed
+ * values, coordinates, and observations are never made durable memory.
+ */
+export function summarizeTrajectorySteps(
+    steps: readonly TrajectoryStep[],
+    prev: TrajectorySummary
+): TrajectorySummary {
+    const completed = prev.completedSubSteps
+        .map((item) => sanitizeMemoryText(item))
+        .filter((item) => SAFE_SUMMARY_ITEMS.has(item))
+
+    for (const step of steps) {
+        if (step.reasoning.outcome === 'completion') {
+            completed.push('Task completed successfully.')
+            continue
+        }
+
+        if (step.action && step.result?.status === 'success') {
+            const progress = describeSuccessfulAction(step.action)
+            if (progress.length > 0) completed.push(progress)
+        }
+    }
+
+    const bounded = uniqueSummaryItems(completed).slice(-MAX_SUMMARY_SUB_STEPS)
+    return {
+        goalText: prev.goalText,
+        inferredProgress: bounded[bounded.length - 1] ?? '',
+        completedSubSteps: bounded,
+        updatedThroughIndex: prev.updatedThroughIndex
+    }
+}
+
+function uniqueSummaryItems(items: readonly string[]): string[] {
+    const output: string[] = []
+    const seen = new Set<string>()
+    for (const item of items) {
+        const normalized = item.toLocaleLowerCase()
+        if (seen.has(normalized)) continue
+        seen.add(normalized)
+        output.push(item)
+    }
+    return output
+}
+
+/** Describe successful Actions without retaining coordinates or typed content. */
+function describeSuccessfulAction(action: Action): string {
+    switch (action.kind) {
+        case 'left_click':
+            return 'Clicked the intended target.'
+        case 'right_click':
+            return 'Opened the target context menu.'
+        case 'double_click':
+            return 'Opened the intended target.'
+        case 'drag':
+            return 'Dragged the intended item to its destination.'
+        case 'type':
+            return 'Entered text into the active field.'
+        case 'key':
+            return 'Pressed a keyboard shortcut.'
+        case 'scroll':
+            return 'Scrolled the current view.'
+        case 'screenshot':
+        case 'mouse_move':
+        case 'wait':
+            return ''
+    }
+}
 
 /** The minimal sink the Summarizer writes the updated summary back through. */
 export interface SummaryStore {
@@ -171,9 +286,17 @@ export function buildReasoningContext(
     guidance?: readonly string[]
 ): ReasoningContext {
     const recentSteps = keepRecent > 0 ? trajectory.slice(-keepRecent) : []
+    // Re-project from structured action/result data on every request so an old
+    // persisted summary containing free-form model text can never be replayed.
+    const safeSummary = summarizeTrajectorySteps(trajectory, {
+        goalText: goal,
+        inferredProgress: '',
+        completedSubSteps: [],
+        updatedThroughIndex: summary.updatedThroughIndex
+    })
     const ctx: ReasoningContext = {
         goal,
-        summary,
+        summary: safeSummary,
         recentSteps: [...recentSteps],
         currentObservation
     }

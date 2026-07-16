@@ -79,6 +79,18 @@ export class SessionManager {
     }
 
     /**
+     * Clear a deleted session from the in-memory source of truth without
+     * archiving or persisting it again. The caller must serialize deletion of
+     * the matching on-disk `current.json` through SessionStore.
+     */
+    clearIfSessionDeleted(ids: readonly string[]): boolean {
+        if (!this.session || !ids.includes(this.session.id)) return false
+        this.session = null
+        this.started = false
+        return true
+    }
+
+    /**
      * The explicit-start gate other components (e.g. the Safety Controller)
      * consult: acting is permitted only when a session exists, the user has
      * explicitly started/resumed it, and it is in an actable state (Req 13.3,

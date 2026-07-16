@@ -27,8 +27,16 @@ export function wireOperatorIpc(
     services: OperatorServices,
     handleStartGoal: (input: StartGoalInput) => Promise<StartResult>
 ): IpcDisposers {
-    const { consoleWindow, configStore, sessions, sessionManager, safety, loop, readPermissions } =
-        services
+    const {
+        consoleWindow,
+        configStore,
+        sessions,
+        forgetSessionMemories,
+        sessionManager,
+        safety,
+        loop,
+        readPermissions
+    } = services
 
     const configReg = registerConfigIpc({ store: configStore, getConsoleWindow: consoleWindow })
 
@@ -54,13 +62,34 @@ export function wireOperatorIpc(
         getSession: () => sessionManager.getSessionView() ?? EMPTY_SESSION_VIEW,
         onListSessions: () => sessions.listSessions(),
         onOpenSession: async (id) => {
+            const current = sessionManager.getSession()
+            // The active task is synthesized into the rail and can be newer than
+            // its archive. Selecting that row must never replace live progress.
+            if (current?.id === id) return toAgentSessionView(current)
             const loaded = await sessions.readSessionById(id)
             if (!loaded) return EMPTY_SESSION_VIEW
             // Adopt for review; acting stays gated behind an explicit start (Req 18.5).
             sessionManager.restore(loaded)
             return toAgentSessionView(loaded)
         },
-        onDeleteSessions: (ids) => sessions.deleteSessions(ids),
+        onDeleteSessions: async (ids) => {
+            // Tombstone recall immediately—before queued disk work or loop
+            // quiescence—so an already-loading or newly-started provider request
+            // cannot receive a session the user has asked to delete.
+            forgetSessionMemories(ids)
+            const activeId = sessionManager.getSession()?.id
+            const deletesActive = activeId !== undefined && ids.includes(activeId)
+            if (deletesActive) {
+                // Wait for any provider/executor continuation to settle while the
+                // SessionManager still exists, then detach it without archiving.
+                await loop.stopAndWait()
+                sessionManager.clearIfSessionDeleted(ids)
+            }
+            // SessionStore queues this after every save/archive and re-checks
+            // the persisted id inside that serialized operation, so a concurrent
+            // replacement session can never be removed by a stale decision.
+            await sessions.deleteSessions(ids)
+        },
         getPermissions: () => {
             const snapshot = readPermissions()
             emitPermissionChanged(consoleWindow(), snapshot)

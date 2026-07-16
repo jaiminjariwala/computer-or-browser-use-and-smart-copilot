@@ -133,6 +133,10 @@ export class AgentLoop {
     private stopped = false
     /** Re-entrancy guard for the async drive loop. */
     private driving = false
+    /** Public async controls currently waiting on perception/reasoning/execution. */
+    private readonly inFlightOperations = new Set<Promise<void>>()
+    /** Blocks a new run while deletion waits for all active work to settle. */
+    private quiescing = false
     /** The Action currently held between reasoning and execution. */
     private pendingAction: PendingAction | null = null
     /** The outstanding confirmation correlation, if suspended at awaiting-confirmation. */
@@ -200,6 +204,7 @@ export class AgentLoop {
      * paused) or terminates.
      */
     start(): Promise<void> {
+        if (this.quiescing) return Promise.resolve()
         // Ignore a Start while a run is already actively in progress.
         if (this.isActiveRunState()) return Promise.resolve()
         // Begin a FRESH run. The loop is a single long-lived instance, so a new
@@ -211,7 +216,7 @@ export class AgentLoop {
         if (!this.session.start()) return Promise.resolve()
         this.setControl(true)
         this.transition('perceiving')
-        return this.drive()
+        return this.trackOperation(this.drive())
     }
 
     /** Whether a run is actively in progress (not idle/paused/terminal). */
@@ -257,6 +262,7 @@ export class AgentLoop {
      * (Property 18).
      */
     resume(): Promise<void> {
+        if (this.quiescing) return Promise.resolve()
         if (this.state !== 'paused' && this.state !== 'awaiting-help') return Promise.resolve()
         if (this.stopped) return Promise.resolve()
         this.pauseRequested = false
@@ -265,7 +271,7 @@ export class AgentLoop {
         if (session && session.status !== 'running') this.session.setStatus('running')
         this.setControl(true)
         this.transition('perceiving')
-        return this.drive()
+        return this.trackOperation(this.drive())
     }
 
     /**
@@ -282,6 +288,44 @@ export class AgentLoop {
         this.recordStopEvent('Session stopped by user')
         this.pendingAction = null
         this.enterTerminal('stopped')
+    }
+
+    /**
+     * Stop and wait until every already-started async control path has settled.
+     * New starts/resumes/confirmations are rejected during this boundary. This
+     * is used before deleting the active SessionManager state so an executor or
+     * provider cannot resume and append into a detached session.
+     */
+    async stopAndWait(): Promise<void> {
+        this.quiescing = true
+        if (
+            this.session.getSession() &&
+            (this.inFlightOperations.size > 0 || this.isActiveRunState())
+        ) {
+            this.stop()
+        } else {
+            this.stopped = true
+            this.pendingConfirmation = null
+            this.pendingAction = null
+            if (this.inControl) this.setControl(false)
+        }
+        try {
+            while (this.inFlightOperations.size > 0) {
+                await Promise.allSettled([...this.inFlightOperations])
+            }
+        } finally {
+            this.quiescing = false
+        }
+    }
+
+    /** Track a public async control without creating an unhandled derived promise. */
+    private trackOperation(operation: Promise<void>): Promise<void> {
+        this.inFlightOperations.add(operation)
+        const remove = (): void => {
+            this.inFlightOperations.delete(operation)
+        }
+        void operation.then(remove, remove)
+        return operation
     }
 
     /**
@@ -340,7 +384,12 @@ export class AgentLoop {
      * (Req 9.4, 10.5). Ignored unless the loop is suspended at
      * `awaiting-confirmation` for this exact `stepId`.
      */
-    async confirm(decision: ConfirmActionInput): Promise<void> {
+    confirm(decision: ConfirmActionInput): Promise<void> {
+        if (this.quiescing) return Promise.resolve()
+        return this.trackOperation(this.resolveConfirmation(decision))
+    }
+
+    private async resolveConfirmation(decision: ConfirmActionInput): Promise<void> {
         if (this.state !== 'awaiting-confirmation' || this.stopped) return
         if (!this.pendingConfirmation || decision.stepId !== this.pendingConfirmation.stepId) return
         this.pendingConfirmation = null

@@ -101,6 +101,11 @@ export function createStartGoalHandler(
             return { ok: false, error: gate.error }
         }
 
+        // A previous run may still be inside provider/executor work even after
+        // Stop changed its visible state. Settle it before replacing the active
+        // SessionManager record so late results cannot land in the new task.
+        await loop.stopAndWait()
+
         // Create the session: records the Goal and associates the Autonomy_Level
         // + Step_Budget BEFORE any Action (Req 1.1, 1.3, 1.5). Preserves any prior
         // session via the archive hook (Req 18.4).
@@ -137,9 +142,17 @@ export function createStartGoalHandler(
         }
 
         // Every precondition holds → start the loop (idle → perceiving). The
-        // promise resolves when the loop next suspends or terminates; we do not
-        // await it so the IPC call returns promptly.
-        void loop.start()
+        // promise resolves when the loop next suspends or terminates; the IPC
+        // still returns promptly, but unexpected failures are observed and
+        // surfaced instead of becoming unhandled rejections.
+        void loop.start().catch((err: unknown) => {
+            emitError(win, {
+                kind: 'action-failed',
+                message: `Operator loop stopped unexpectedly: ${err instanceof Error ? err.message : String(err)}`,
+                recoverable: true,
+                action: 'retry'
+            })
+        })
         return { ok: true, sessionId: created.session.id }
     }
 }
