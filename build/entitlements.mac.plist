@@ -10,7 +10,9 @@
     <true/>
     <key>com.apple.security.cs.disable-library-validation</key>
     <true/>
-    <!-- Microphone access for in-app voice dictation (speech-to-text). -->
+    <!-- Camera/microphone access for explicit video recording and dictation. -->
+    <key>com.apple.security.device.camera</key>
+    <true/>
     <key>com.apple.security.device.audio-input</key>
     <true/>
     <!-- Screen Recording is gated by macOS TCC at runtime (not by an entitlement);

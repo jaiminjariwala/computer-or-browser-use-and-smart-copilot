@@ -132,6 +132,29 @@ function textPart(text: string): ChatCompletionContentPart {
     return { type: 'text', text }
 }
 
+function frameTimestamp(seconds: number): string {
+    const wholeSeconds = Math.max(0, Math.round(seconds))
+    const minutes = Math.floor(wholeSeconds / 60)
+    return `${minutes}:${String(wholeSeconds % 60).padStart(2, '0')}`
+}
+
+/**
+ * A raw video is never sent to the provider. Sampled frames reuse the normal
+ * image path and carry a compact ordering cue so every vision model can reason
+ * over them as one chronological sequence.
+ */
+function captureParts(capture: TurnCapture): ChatCompletionContentPart[] {
+    const frame = capture.videoFrame
+    if (!frame) return [imagePart(capture)]
+    return [
+        textPart(
+            `Video sequence ${frame.sequenceId.slice(0, 8)}, frame ${frame.index}/${frame.count} ` +
+            `at ${frameTimestamp(frame.timestampSeconds)}. Treat frames with this sequence id as one video in chronological order.`
+        ),
+        imagePart(capture)
+    ]
+}
+
 /**
  * Map a single {@link Turn} to a chat-completion message (design step 3).
  *
@@ -147,13 +170,13 @@ export function turnToMessage(turn: Turn): ChatCompletionMessageParam {
     if (turn.captures && turn.captures.length > 0) {
         const parts: ChatCompletionContentPart[] = []
         if (text.length > 0) parts.push(textPart(text))
-        for (const capture of turn.captures) parts.push(imagePart(capture))
+        for (const capture of turn.captures) parts.push(...captureParts(capture))
         return { role: 'user', content: parts }
     }
     if (turn.capture) {
         const parts: ChatCompletionContentPart[] = []
         if (text.length > 0) parts.push(textPart(text))
-        parts.push(imagePart(turn.capture))
+        parts.push(...captureParts(turn.capture))
         // Only user turns carry captures; the cast keeps the union precise.
         return { role: 'user', content: parts }
     }
@@ -165,7 +188,7 @@ export function turnToMessage(turn: Turn): ChatCompletionMessageParam {
 
 /** A final, text-less user image message for the capture under interpretation. */
 function captureMessage(capture: TurnCapture): ChatCompletionMessageParam {
-    return { role: 'user', content: [imagePart(capture)] }
+    return { role: 'user', content: captureParts(capture) }
 }
 
 /** True when the context's currentCapture is already the last recent turn. */

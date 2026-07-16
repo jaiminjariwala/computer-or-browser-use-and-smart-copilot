@@ -34,8 +34,8 @@ mac:
   # the user grants it via System Settings > Privacy & Security > Screen Recording.
   # We declare camera/mic usage strings defensively in case capture APIs touch them.
   extendInfo:
-    NSCameraUsageDescription: Computer or Browser Use and Smart Copilot captures the selected screen region to provide on-screen guidance.
-    NSMicrophoneUsageDescription: Computer or Browser Use and Smart Copilot uses the microphone for voice dictation so you can speak instead of type.
+    NSCameraUsageDescription: Computer or Browser Use and Smart Copilot uses the camera when you choose to record a video attachment.
+    NSMicrophoneUsageDescription: Computer or Browser Use and Smart Copilot uses the microphone for voice dictation and, when allowed, audio in video attachments you record.
   hardenedRuntime: true
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist

@@ -86,14 +86,17 @@ export function runLocalFallback(
  */
 export function buildFallbackRequest(ctx: SessionContext): { images: string[]; prompt: string } {
     const images: string[] = []
-    const pushUnique = (url?: string): void => {
+    let hasVideoFrames = false
+    const pushCapture = (capture?: SessionContext['currentCapture']): void => {
+        const url = capture?.dataUrl
         if (url && !images.includes(url)) images.push(url)
+        if (capture?.videoFrame) hasVideoFrames = true
     }
     for (const turn of ctx.recentTurns ?? []) {
-        pushUnique(turn.capture?.dataUrl)
-        for (const cap of turn.captures ?? []) pushUnique(cap.dataUrl)
+        pushCapture(turn.capture)
+        for (const cap of turn.captures ?? []) pushCapture(cap)
     }
-    pushUnique(ctx.currentCapture?.dataUrl)
+    pushCapture(ctx.currentCapture)
 
     // The prompt must match what the on-device model can actually do. WITH a
     // screenshot it is a vision "next step" task; WITHOUT one it is a plain
@@ -108,6 +111,9 @@ export function buildFallbackRequest(ctx: SessionContext): { images: string[]; p
     ]
     const goal = ctx.summary?.inferredIntent?.trim()
     if (goal) lines.push(`The user's goal so far: ${goal}`)
+    if (hasVideoFrames) {
+        lines.push('The attached images include chronological frames sampled from a video. Compare them as a time sequence.')
+    }
     for (const turn of ctx.recentTurns ?? []) {
         const text = turn.text?.trim()
         if (text) lines.push(`${turn.role === 'user' ? 'User' : 'Assistant'}: ${text}`)
