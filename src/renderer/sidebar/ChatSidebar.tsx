@@ -29,11 +29,12 @@ function SidebarCollapseIcon(): React.JSX.Element {
     )
 }
 
+/** Compose pencil — the familiar "start something new" glyph. */
 function NewChatIcon(): React.JSX.Element {
     return (
         <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-            <path d="M18.4 2.6a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4Z" />
+            <path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z" />
+            <path d="m15 5 4 4" />
         </svg>
     )
 }
@@ -51,54 +52,39 @@ function BrowserUseIcon(): React.JSX.Element {
 function SettingsIcon(): React.JSX.Element {
     return (
         <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M4 7h10M18 7h2M4 17h2M10 17h10" />
-            <circle cx="16" cy="7" r="2" />
-            <circle cx="8" cy="17" r="2" />
+            <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+            <circle cx="12" cy="12" r="3" />
         </svg>
     )
 }
 
+/** The official GitHub mark (invertocat), filled with the current text color. */
 function GitHubIcon(): React.JSX.Element {
     return (
         <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true">
-            <path d="M12 .8a11.4 11.4 0 0 0-3.6 22.2c.57.1.78-.25.78-.55v-2.2c-3.18.7-3.85-1.35-3.85-1.35-.52-1.33-1.27-1.68-1.27-1.68-1.04-.7.08-.7.08-.7 1.15.09 1.75 1.19 1.75 1.19 1.02 1.75 2.68 1.24 3.33.95.1-.74.4-1.24.73-1.53-2.54-.29-5.21-1.27-5.21-5.64 0-1.25.44-2.27 1.18-3.07-.12-.29-.51-1.45.11-3.03 0 0 .96-.31 3.14 1.17A10.9 10.9 0 0 1 12 6.18c.97 0 1.93.13 2.84.38 2.18-1.48 3.14-1.17 3.14-1.17.62 1.58.23 2.74.11 3.03.74.8 1.18 1.82 1.18 3.07 0 4.38-2.68 5.34-5.22 5.63.41.36.77 1.05.77 2.12v3.21c0 .3.21.66.79.55A11.4 11.4 0 0 0 12 .8Z" />
+            <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12" />
         </svg>
     )
 }
 
-function dateBucketLabel(iso: string): string {
-    const date = new Date(iso)
-    if (Number.isNaN(date.getTime())) return 'Earlier'
-    const atDayStart = (value: Date): number =>
-        new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime()
-    const now = new Date()
-    const days = Math.round((atDayStart(now) - atDayStart(date)) / 86_400_000)
-    if (days <= 0) return 'Today'
-    if (days === 1) return 'Yesterday'
-    if (days < 7) return 'Previous 7 days'
-    if (days < 30) return 'Previous 30 days'
-    return date.toLocaleDateString(
-        undefined,
-        date.getFullYear() === now.getFullYear()
-            ? { month: 'long' }
-            : { month: 'long', year: 'numeric' }
-    )
-}
-
-function groupHistory(items: SessionListItem[]): Array<{ label: string; items: SessionListItem[] }> {
-    const groups: Array<{ label: string; items: SessionListItem[] }> = []
-    const indexes = new Map<string, number>()
-    for (const item of items) {
-        const label = dateBucketLabel(item.updatedAt)
-        const known = indexes.get(label)
-        if (known !== undefined) {
-            groups[known].items.push(item)
-            continue
-        }
-        indexes.set(label, groups.length)
-        groups.push({ label, items: [item] })
-    }
-    return groups
+/** Compact "how long ago" label: 3 mins ago · 5 hrs ago · 2 days ago · 1 wk ago … */
+function relativeTimeLabel(iso: string, nowMs: number): string {
+    const then = new Date(iso).getTime()
+    if (Number.isNaN(then)) return ''
+    const seconds = Math.max(0, Math.floor((nowMs - then) / 1000))
+    if (seconds < 60) return 'now'
+    const minutes = Math.floor(seconds / 60)
+    if (minutes < 60) return `${minutes} ${minutes === 1 ? 'min' : 'mins'} ago`
+    const hours = Math.floor(minutes / 60)
+    if (hours < 24) return `${hours} ${hours === 1 ? 'hr' : 'hrs'} ago`
+    const days = Math.floor(hours / 24)
+    if (days < 7) return `${days} ${days === 1 ? 'day' : 'days'} ago`
+    const weeks = Math.floor(days / 7)
+    if (days < 30) return `${weeks} ${weeks === 1 ? 'wk' : 'wks'} ago`
+    const months = Math.floor(days / 30)
+    if (months < 12) return `${months} ${months === 1 ? 'month' : 'months'} ago`
+    const years = Math.floor(days / 365)
+    return `${years} ${years === 1 ? 'year' : 'years'} ago`
 }
 
 /** Fast type/delete cycle for the active running row; static under reduced motion. */
@@ -170,12 +156,12 @@ function authLabel(status: GitHubAuthStatus | null): { primary: string; secondar
         return { primary: 'Finish GitHub sign-in', secondary: status.message ?? 'Waiting for approval…' }
     }
     if (status.state === 'unconfigured') {
-        return { primary: 'GitHub login setup', secondary: 'Public client ID required' }
+        return { primary: 'Log in or sign up', secondary: 'Continue with GitHub' }
     }
     if (status.state === 'error') {
         return { primary: 'Try GitHub sign-in again', secondary: status.message ?? 'Connection failed' }
     }
-    return { primary: 'Log in / sign up with GitHub', secondary: status.message ?? 'Sync your account securely' }
+    return { primary: 'Log in or sign up', secondary: 'Continue with GitHub' }
 }
 
 export function ChatSidebar({
@@ -195,6 +181,12 @@ export function ChatSidebar({
     const [challenge, setChallenge] = useState<GitHubDeviceChallenge | null>(null)
     const [authBusy, setAuthBusy] = useState(false)
     const [copied, setCopied] = useState(false)
+    // Ticks once a minute so the "x mins ago" labels never go stale.
+    const [now, setNow] = useState(() => Date.now())
+    useEffect(() => {
+        const timer = setInterval(() => setNow(Date.now()), 60_000)
+        return () => clearInterval(timer)
+    }, [])
 
     useEffect(() => {
         let mounted = true
@@ -214,26 +206,44 @@ export function ChatSidebar({
     }, [])
 
     const beginGitHubLogin = useCallback(() => {
-        if (authBusy || authStatus?.state === 'unconfigured') return
+        if (authBusy) return
         setAuthBusy(true)
         setCopied(false)
         void window.glass
             .startGitHubLogin()
             .then((nextChallenge) => {
                 setChallenge(nextChallenge)
-                setAuthStatus({
-                    state: 'authorizing',
-                    message: 'Enter this code in the GitHub page opened in your browser.'
-                })
+                // Copy the one-time code up front so the user only has to
+                // paste (⌘V) on the GitHub page that just opened.
+                void navigator.clipboard
+                    .writeText(nextChallenge.userCode)
+                    .then(() => {
+                        setCopied(true)
+                        setAuthStatus({
+                            state: 'authorizing',
+                            message: 'Code copied — just press ⌘V on the GitHub page to authorize.'
+                        })
+                    })
+                    .catch(() => {
+                        setCopied(false)
+                        setAuthStatus({
+                            state: 'authorizing',
+                            message: 'Enter this code in the GitHub page opened in your browser.'
+                        })
+                    })
             })
             .catch((error: unknown) => {
+                // IPC failures read like "Error invoking remote method
+                // 'github-auth:start': Error: <reason>" — surface only the reason.
+                const raw = error instanceof Error ? error.message : ''
+                const reason = raw.split(/Error:\s*/).pop()?.trim() ?? ''
                 setAuthStatus({
                     state: 'error',
-                    message: error instanceof Error ? error.message : 'GitHub sign-in could not start.'
+                    message: reason.length > 0 ? reason : 'GitHub sign-in could not start.'
                 })
             })
             .finally(() => setAuthBusy(false))
-    }, [authBusy, authStatus?.state])
+    }, [authBusy])
 
     const logout = useCallback(() => {
         setAuthBusy(true)
@@ -260,13 +270,22 @@ export function ChatSidebar({
             .catch(() => setCopied(false))
     }, [challenge])
 
+    // Closed the GitHub tab before pasting? Reopen the same verification page
+    // for the still-valid code instead of restarting the whole sign-in.
+    const reopenGitHub = useCallback(() => {
+        void window.glass.openGitHubVerification().catch((error: unknown) => {
+            const raw = error instanceof Error ? error.message : ''
+            const reason = raw.split(/Error:\s*/).pop()?.trim() ?? ''
+            setAuthStatus({
+                state: 'error',
+                message: reason.length > 0 ? reason : 'Could not reopen the GitHub page.'
+            })
+        })
+    }, [])
+
     const account = authLabel(authStatus)
     const signedIn = authStatus?.state === 'signed-in'
-    const authDisabled =
-        authBusy ||
-        authStatus?.state === 'unconfigured' ||
-        authStatus?.state === 'authorizing' ||
-        signedIn
+    const authDisabled = authBusy || authStatus?.state === 'authorizing' || signedIn
 
     return (
         <aside className="glass-nav glass-nav--open" aria-label="Conversation sidebar">
@@ -288,47 +307,48 @@ export function ChatSidebar({
             </div>
 
             <div className="glass-nav__list">
-                {items.length > 0 && groupHistory(items).map((group) => (
-                    <div className="glass-history__group" key={group.label}>
-                        <div className="glass-history__group-label">{group.label}</div>
-                        {group.items.map((item) => {
-                            const active = item.id === activeId
-                            const isRunning = active && running
-                            return (
-                                <button
-                                    type="button"
-                                    key={item.id}
-                                    className={`glass-history__item${active ? ' glass-history__item--selected' : ''}${isRunning ? ' glass-history__item--running' : ''}`}
-                                    onClick={() => onOpenSession(item.id)}
-                                    onContextMenu={(event) => onChatContextMenu(event, item.id)}
-                                    aria-current={active ? 'page' : undefined}
-                                >
-                                    {isRunning && (
-                                        <span className="glass-history__status">
-                                            <span className="glass-history__running-dot" title="Task running" />
-                                        </span>
-                                    )}
-                                    <span className="glass-history__text">
-                                        <span className="glass-history__item-title">{item.title}</span>
-                                        {isRunning && item.description && (
-                                            <ChatDescription text={item.description} animate />
-                                        )}
-                                    </span>
-                                </button>
-                            )
-                        })}
-                    </div>
-                ))}
+                {items.map((item) => {
+                    const active = item.id === activeId
+                    const isRunning = active && running
+                    return (
+                        <button
+                            type="button"
+                            key={item.id}
+                            className={`glass-history__item${active ? ' glass-history__item--selected' : ''}${isRunning ? ' glass-history__item--running' : ''}`}
+                            onClick={() => onOpenSession(item.id)}
+                            onContextMenu={(event) => onChatContextMenu(event, item.id)}
+                            aria-current={active ? 'page' : undefined}
+                        >
+                            {isRunning && (
+                                <span className="glass-history__status">
+                                    <span className="glass-history__running-dot" title="Task running" />
+                                </span>
+                            )}
+                            <span className="glass-history__text">
+                                <span className="glass-history__item-title">{item.title}</span>
+                                {isRunning && item.description && (
+                                    <ChatDescription text={item.description} animate />
+                                )}
+                            </span>
+                            <span className="glass-history__time">
+                                {relativeTimeLabel(item.updatedAt, now)}
+                            </span>
+                        </button>
+                    )
+                })}
             </div>
 
             <div className="glass-nav__footer">
                 {challenge && authStatus?.state === 'authorizing' && (
                     <div className="glass-account-code" role="status">
                         <span>GitHub code</span>
-                        <button type="button" onClick={copyCode} title="Copy GitHub verification code">
-                            {challenge.userCode}
+                        <span className="glass-account-code__value">{challenge.userCode}</span>
+                        <button type="button" onClick={copyCode} title="Copy the GitHub verification code">
+                            {copied ? 'Copied' : 'Copy'}
                         </button>
-                        <span>{copied ? 'Copied' : 'Browser opened'}</span>
+                        <button type="button" onClick={reopenGitHub} title="Reopen the GitHub authorize page">
+                            Reopen
+                        </button>
                     </div>
                 )}
                 <div className="glass-account">

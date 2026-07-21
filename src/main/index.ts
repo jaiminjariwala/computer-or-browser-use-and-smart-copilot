@@ -16,16 +16,20 @@ import {
     registerGlassIpc,
     emitError,
     emitPending,
+    emitRequestStarted,
+    emitRequestSettled,
     emitTurnAppended,
     emitSessionState,
     emitSummary,
     emitCaptureStaged,
-    emitGatewayFallback
+    emitSetupNeeded
 } from './ipc'
 import { HotkeyManager, applyRegistrationResult } from './hotkey'
 import { TrayManager } from './tray'
 import { SessionManager } from './session'
 import { SessionStore } from './session-store'
+import { MemoryStore, extractMemoryFact } from './memory-store'
+import { readSelectedMail } from './mail-connector'
 import { GatewayAIClient } from './ai'
 import { ChatFlow } from './chat-flow'
 import { Summarizer } from './summarizer'
@@ -38,6 +42,8 @@ import { CaptureOrchestrator } from './capture-orchestrator'
 // it never collides with Click Copilot's own services.
 import { createOperatorServices } from './operator/main/bootstrap/services'
 import { createStartGoalHandler } from './operator/main/bootstrap/start-gate-runner'
+import { createPlaybookScheduler, type PlaybookScheduler } from './operator/main/scheduler'
+import { presentNotification } from './operator/main/notifications'
 import { wireOperatorIpc } from './operator/main/bootstrap/ipc-wiring'
 import { createEmergencyStopManager, type HotkeyManager as OperatorHotkeyManager } from './operator/main/hotkey'
 
@@ -83,6 +89,7 @@ let disposeOperatorIpc: (() => void) | null = null
 let disposeOperatorConfigIpc: (() => void) | null = null
 let disposeGitHubAuthIpc: (() => void) | null = null
 let flushOperatorSessions: (() => Promise<void>) | null = null
+let playbookScheduler: PlaybookScheduler | null = null
 
 /**
  * Show and focus the Sidebar_Panel, creating it if necessary. Used by the
@@ -190,12 +197,15 @@ app.whenReady().then(async () => {
         }
     }
 
-    // Allow camera/microphone only for the trusted sidebar renderer. Dictation
-    // requests audio; the local video recorder requests video and, when
-    // available, audio. Every other permission and renderer is denied.
+    // Allow camera/microphone and clipboard WRITES only for the trusted
+    // sidebar renderer. Dictation requests audio; the local video recorder
+    // requests video and, when available, audio; GitHub sign-in copies the
+    // one-time device code. Clipboard READS and every other permission and
+    // renderer are denied.
     session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
         const trustedSidebar = mainWindow !== null && webContents === mainWindow.webContents
-        callback(permission === 'media' && trustedSidebar)
+        const allowed = permission === 'media' || permission === 'clipboard-sanitized-write'
+        callback(allowed && trustedSidebar)
     })
 
     // Config / Credential Store IPC + prompt when credentials are missing.
@@ -219,6 +229,9 @@ app.whenReady().then(async () => {
     // (Req 9.2, 9.3). Kept separate from the manager so disk I/O never collides
     // with concurrent in-memory edits; writes are coalesced/serialized inside.
     const sessionStore = new SessionStore()
+    // Persistent user memory: explicit "remember ..." facts, local JSON under
+    // userData, listed/deletable in Settings, folded into chat requests.
+    const memoryStore = new MemoryStore({ userDataDir: app.getPath('userData') })
 
     // Session Manager: in-memory source of truth for the active conversation.
     // The `onTurnAppended` hook drives the Summarizer (wired below); it is
@@ -251,16 +264,14 @@ app.whenReady().then(async () => {
     const aiClient = new GatewayAIClient({
         getConfig: () => configStore.readConfig(),
         getApiKey: () => configStore.getApiKey(),
-        getFallbackConfig: async () => {
-            const cfg = await configStore.readConfig()
-            const baseURL = cfg.fallbackBaseURL ?? ''
-            const model = cfg.fallbackModel ?? ''
-            return baseURL && model ? { baseURL, model } : null
-        },
-        getFallbackApiKey: () => configStore.getFallbackApiKey(),
-        // Built-in free hosted chain (OpenRouter -> GLM -> Gemini), tried after
-        // the primary + Ollama fallback and before the on-device model.
-        getFallbackProviders: () => configStore.getHostedFallbacks()
+        // Built-in free hosted providers (OpenRouter -> Gemini), tried after
+        // the user's own (corporate/personal) gateway.
+        getFallbackProviders: () => configStore.getHostedFallbacks(),
+        // Automatic memory: durable user facts the summarize pass extracts
+        // land in the same auditable store as explicit "remember ..." writes.
+        onUserFacts: (facts) => {
+            for (const fact of facts) void memoryStore.add(fact)
+        }
     })
 
     // Summarizer: folds older turns into the running summary once the unfolded
@@ -280,7 +291,9 @@ app.whenReady().then(async () => {
         if (!sessionId || active.id === sessionId) {
             const turn = sessionManager.appendAssistantText(text)
             emitTurnAppended(mainWindow, turn)
-            emitPending(mainWindow, false)
+            // Pending is owned by ChatFlow's request tracker: it clears only
+            // once NO question is still in flight, so a second concurrent
+            // question keeps its thinking state when the first one answers.
             return
         }
         await appendToArchived(sessionId, text, 'ok')
@@ -293,7 +306,6 @@ app.whenReady().then(async () => {
         const active = sessionManager.getSession()
         if (!sessionId || active.id === sessionId) {
             emitError(mainWindow, { kind: 'render-failed', message, recoverable: true })
-            emitPending(mainWindow, false)
             return
         }
         await appendToArchived(sessionId, message, 'error')
@@ -335,6 +347,15 @@ app.whenReady().then(async () => {
             activeSessionId: () => sessionManager.getSession().id,
             deliverAssistant
         },
+        // Persistent memory: explicitly saved facts ride along on every
+        // request, and "remember ..." messages write deterministically.
+        memories: {
+            list: () => memoryStore.texts(),
+            captureFromMessage: async (text) => {
+                const fact = extractMemoryFact(text)
+                if (fact) await memoryStore.add(fact)
+            }
+        },
         ai: aiClient,
         emitters: {
             turnAppended: (turn) => emitTurnAppended(mainWindow, turn),
@@ -342,11 +363,32 @@ app.whenReady().then(async () => {
             error: (error) => emitError(mainWindow, error),
             credentialsRequired: () =>
                 mainWindow?.webContents.send('credentials:required'),
-            // When the gateway fails, hand off to the renderer's zero-config
-            // local fallback model instead of just erroring. `originId` rides
-            // along so the fallback answer returns to the origin chat.
-            fallbackNeeded: (ctx, originId) =>
-                emitGatewayFallback(mainWindow, ctx, originId)
+            // Every provider failed. Two very different reasons, two outcomes:
+            //  - Nothing is configured at all (fresh install): show the in-chat
+            //    setup card so the user can paste a free key right there.
+            //  - Keys exist but nothing answered (outage / bad key): drop a
+            //    short error turn into the origin chat.
+            providersExhausted: (_ctx, originId, requestId) => {
+                void (async () => {
+                    if (chatFlow.wasCancelled(requestId)) return
+                    const status = await configStore.getStatus()
+                    const anyProviderConfigured =
+                        status.hasCredentials || status.hasOpenrouter || status.hasGemini
+                    if (!anyProviderConfigured) {
+                        emitSetupNeeded(mainWindow)
+                    } else {
+                        await deliverErrorTurn(
+                            originId,
+                            'None of your connected AI providers could answer. Check your keys in Settings and try again.'
+                        )
+                    }
+                    chatFlow.settleRequest(requestId)
+                })()
+            },
+            // Per-question thinking state so the sidebar can show (and cancel)
+            // each in-flight question independently.
+            requestStarted: (requestId) => emitRequestStarted(mainWindow, requestId),
+            requestSettled: (requestId) => emitRequestSettled(mainWindow, requestId)
         }
     })
 
@@ -446,19 +488,34 @@ app.whenReady().then(async () => {
         onCancelRegion: () => {
             captureOrchestrator.handleCancel()
         },
-        // New Session (Req 9.1): archive the current conversation to
-        // `sessions/<id>.json` so it is preserved, then start a fresh empty
-        // session. `newSession()` fires `onSessionChanged`, which persists the
-        // new empty `current.json`. Finally push the fresh session view to the
-        // sidebar so the conversation view + summary clear.
-        onNewSession: () => {
-            // Only archive the current session if it actually has content, so
-            // empty/never-used chats don't show up as "Untitled chat" later.
+        // New Session (Req 9.1). The rail contract:
+        //  1. New chat parks the outgoing conversation and shows a fresh empty
+        //     chat at the top of the rail.
+        //  2. New chat is IDEMPOTENT: if the open chat is already empty it IS
+        //     the new chat — never stack a second one.
+        //  3. If an empty chat was parked earlier (the user created one, then
+        //     navigated to an older chat), New chat REOPENS that parked empty
+        //     chat instead of minting another.
+        // Every archive is awaited: the renderer refreshes its list the moment
+        // this IPC call resolves, and a fire-and-forget write intermittently
+        // lost the race and dropped rows from the rail.
+        onNewSession: async () => {
             const current = sessionManager.getSession()
-            if (current.turns.length > 0) {
-                void sessionStore.archive(current)
+            if (current.turns.length === 0) {
+                emitSessionState(mainWindow, sessionManager.getSessionView())
+                return
             }
-            sessionManager.newSession()
+            await sessionStore.archive(current)
+            const items = await sessionStore.listSessions()
+            const parkedEmpty = items.find((item) => item.turnCount === 0)
+            const stored = parkedEmpty
+                ? await sessionStore.readSessionById(parkedEmpty.id)
+                : null
+            if (stored) {
+                sessionManager.restore(stored)
+            } else {
+                sessionManager.newSession()
+            }
             emitSessionState(mainWindow, sessionManager.getSessionView())
         },
         // Chat history: list past sessions and reopen one. Opening archives the
@@ -466,6 +523,13 @@ app.whenReady().then(async () => {
         // archives), then restores the chosen session as the active one and
         // pushes it to the sidebar so the view updates.
         onListSessions: () => sessionStore.listSessions(),
+        // Persistent memory audit surface (Settings): list / add / delete / clear.
+        onListMemories: () => memoryStore.list(),
+        onAddMemory: (text) => memoryStore.add(text),
+        onDeleteMemory: (id) => memoryStore.delete(id),
+        onClearMemories: () => memoryStore.clear(),
+        // Email connector: read the selected Mail/Outlook message on demand.
+        onReadSelectedMail: (source) => readSelectedMail(source),
         onOpenSession: async (id) => {
             const current = sessionManager.getSession()
             // The renderer synthesizes the current in-memory session alongside
@@ -474,9 +538,10 @@ app.whenReady().then(async () => {
             if (current.id === id) return
             const chosen = await sessionStore.readSessionById(id)
             if (!chosen) return
-            if (current.turns.length > 0) {
-                await sessionStore.archive(current)
-            }
+            // Archive the outgoing chat even when EMPTY: an open "New chat"
+            // must stay in the rail until the user deletes it, and it reopens
+            // through this same path (it lists as a normal turnCount-0 row).
+            await sessionStore.archive(current)
             sessionManager.restore(chosen)
             emitSessionState(mainWindow, sessionManager.getSessionView())
         },
@@ -500,17 +565,7 @@ app.whenReady().then(async () => {
         // Route the result to the ORIGIN chat (via `originId`): a live answer if
         // that chat is still active, otherwise a persisted turn so it shows on
         // reopen. Handles pending/error itself through the deliver helpers.
-        onFallbackResult: async (text, originId) => {
-            const trimmed = (text ?? '').trim()
-            if (trimmed.length > 0) {
-                await deliverAssistant(originId, trimmed)
-            } else {
-                await deliverErrorTurn(
-                    originId,
-                    'The gateway was unavailable and the local fallback model could not answer. Check your gateway key in Settings.'
-                )
-            }
-        }
+        onCancelRequest: (requestId) => chatFlow.cancelRequest(requestId)
     })
 
     createWindow()
@@ -545,13 +600,6 @@ app.whenReady().then(async () => {
     // Let the user pick a different accelerator after a conflict (Req 1.4).
     // The renderer invokes this with the chosen accelerator; the result is run
     // back through the same fallback so a still-conflicting choice re-prompts.
-    // Pin / unpin the window on top (the floating-panel behavior is now opt-in).
-    ipcMain.handle('window:set-pinned', (_event, pinned: boolean): void => {
-        const flag = Boolean(pinned)
-        mainWindow?.setAlwaysOnTop(flag, 'floating')
-        mainWindow?.setVisibleOnAllWorkspaces(flag, { visibleOnFullScreen: true })
-    })
-
     ipcMain.handle('hotkey:reregister', (_event, accelerator: string): boolean => {
         if (!hotkeyManager || typeof accelerator !== 'string' || accelerator.length === 0) {
             return false
@@ -584,11 +632,38 @@ app.whenReady().then(async () => {
     disposeOperatorConfigIpc = operatorIpc.disposeConfigIpc
     flushOperatorSessions = () => operatorServices.sessions.flush()
 
+    // Playbook scheduler: daily-at-HH:MM runs while the app is open. Runs go
+    // through the SAME start-gate as a user click (safety gate, budgets,
+    // confirmations all apply), and the task-1 notifier covers their
+    // completion/failure/help banners. `lastRunDate` stamps only on a real
+    // start, so busy/rejected runs retry on later ticks the same day.
+    const busyStates = new Set(['perceiving', 'reasoning', 'awaiting-confirmation', 'acting', 'paused', 'awaiting-help'])
+    playbookScheduler = createPlaybookScheduler({
+        store: operatorServices.playbooks,
+        isBusy: () => busyStates.has(operatorServices.loop.getState()),
+        runPlaybook: async (pb) => {
+            const result = await handleStartGoal({
+                goal: pb.goal,
+                autonomy: pb.autonomy,
+                stepBudget: pb.stepBudget,
+                environment: pb.environment
+            })
+            return result.ok
+        },
+        onStarted: (pb) => {
+            presentNotification({
+                title: 'Scheduled task started',
+                body: pb.name
+            })
+        }
+    })
+    playbookScheduler.start()
+
     // Seed the operator's (isolated) provider chain from Click Copilot's stored
     // credentials, so the operator runs on whatever the user already configured
     // with no separate operator setup. Re-seeded every launch. The chain is the
     // user's primary OpenAI-compatible provider, then the same free hosted
-    // providers the copilot uses (Gemini / GLM / OpenRouter), tried in order.
+    // providers the copilot uses (Gemini / OpenRouter), tried in order.
     // Defined as a function so it runs both now (launch) and after every
     // `config:save` (via the `onSaved` hook above), keeping the operator in sync
     // with keys the user adds while the app is running.
@@ -622,12 +697,11 @@ app.whenReady().then(async () => {
             }
 
             // Order matters: the operator tries these in sequence, so lead with
-            // Gemini (the strongest free vision + tool-calling model), then GLM,
-            // then the OpenRouter free router. The user's primary provider
-            // (added above when configured) stays first.
+            // Gemini (the strongest free vision + tool-calling model), then the
+            // OpenRouter free router. The user's primary provider (added above
+            // when configured) stays first.
             const hosted: Array<[HostedFallbackId, string]> = [
                 ['gemini', glassCfg.geminiModel ?? ''],
-                ['glm', glassCfg.glmModel ?? ''],
                 ['openrouter', glassCfg.openrouterModel ?? '']
             ]
             for (const [id, modelOverride] of hosted) {
@@ -692,6 +766,7 @@ app.on('will-quit', () => {
     windowManager?.stopPencilFollow()
     // Operator engine teardown.
     operatorHotkey?.unregister()
+    playbookScheduler?.stop()
     disposeOperatorIpc?.()
     disposeOperatorConfigIpc?.()
     disposeGitHubAuthIpc?.()

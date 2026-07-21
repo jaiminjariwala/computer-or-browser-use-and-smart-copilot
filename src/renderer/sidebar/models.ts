@@ -85,18 +85,19 @@ export function defaultRecommended(operatorMode: boolean): ModelOption[] {
     })
     if (operatorMode) {
         // Lead with the free options that can drive the operator on your keys.
+        // Gemini 2.5 Pro is the "stronger" pick: markedly better multi-step
+        // judgment (fewer premature completions / off-goal detours) on the
+        // same key, at tighter free-tier rate limits.
         return [
             rec('gemini-2.5-flash', 'Gemini 2.5 Flash', 'free, computer or browser use'),
-            rec('glm-4v-flash', 'GLM-4V Flash', 'free, browser use'),
+            rec('gemini-2.5-pro', 'Gemini 2.5 Pro', 'stronger reasoning, tighter free limits'),
             rec('openrouter/free', 'OpenRouter Free', 'free, auto-selects')
         ]
     }
     return [
         rec('gemini-2.5-flash', 'Gemini 2.5 Flash', 'free'),
         rec('gpt-4o', 'GPT-4o', 'vision'),
-        rec('glm-4v-flash', 'GLM-4V Flash', 'free'),
-        rec('openrouter/free', 'OpenRouter Free', 'free, auto-selects'),
-        rec('smolvlm-on-device', 'SmolVLM', 'on-device, offline')
+        rec('openrouter/free', 'OpenRouter Free', 'free, auto-selects')
     ]
 }
 

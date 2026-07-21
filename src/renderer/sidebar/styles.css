@@ -7,10 +7,10 @@
     --text-dim: #6b6b73;
     --accent: #34343a;
     --accent-fg: #ffffff;
-    --user-bubble: #f0f0f2;
+    --user-bubble: #eeeeee;
     --code-bg: #f3f3f5;
-    --app-bg: rgb(252, 251, 251);
-    --card-bg: rgb(252, 251, 251);
+    --app-bg: #ffffff;
+    --card-bg: #ffffff;
     --field-bg: #ffffff;
     --field-border: #d0d0d6;
     --radius: 14px;
@@ -94,8 +94,8 @@ body {
     width: 240px;
     display: flex;
     flex-direction: column;
-    /* Distinct soft rail surface, matching modern assistant sidebars. */
-    background: rgb(241, 241, 241);
+    /* No rail fill: the sidebar shares the app background. */
+    background: transparent;
     overflow: hidden;
 }
 
@@ -226,27 +226,18 @@ body {
     background: var(--bg-subtle);
 }
 
-/* Chat history date groups (Today / Yesterday / month). Chats sit tight under
-   their heading (small gap) while a larger gap separates one group from the
-   next heading, so each heading reads as a label for the chats beneath it. */
-.glass-history__group {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    margin-bottom: 0;
-}
-
-.glass-history__group-label {
-    /* Large top space (separates from the previous group) + small bottom space
-       (keeps this heading attached to its own chats below). */
-    padding: 16px 10px 2px;
-    font-size: 11px;
-    font-weight: 600;
+/* Right-aligned "x mins ago" stamp on each chat row (no date group headers). */
+.glass-history__time {
+    flex: 0 0 auto;
+    margin-left: auto;
+    align-self: center;
     color: var(--text-dim);
+    font-size: 10.5px;
+    white-space: nowrap;
 }
 
-/* The first heading needs no big top gap since nothing precedes it. */
-.glass-history__group:first-child .glass-history__group-label {
+.glass-history__item--running .glass-history__time {
+    align-self: flex-start;
     padding-top: 2px;
 }
 
@@ -604,14 +595,14 @@ body {
     cursor: pointer;
 }
 
-/* Hover: a light gray fill, no border box. */
+/* Hover: no fill — only the selected row gets a background. */
 .glass-history__item:hover {
-    background: var(--bg-subtle);
+    background: transparent;
 }
 
 /* Selected: a slightly stronger gray fill (still no block border). */
 .glass-history__item--selected {
-    background: #ededf0;
+    background: #eeeeee;
 }
 
 /* Custom round selection mark (no raw checkbox square). */
@@ -862,23 +853,6 @@ body {
     color: var(--text-dim);
 }
 
-.glass-onboard {
-    text-align: left;
-    margin: 12px 0;
-    padding-left: 20px;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    font-size: 12.5px;
-    line-height: 1.45;
-    color: var(--text-dim);
-}
-
-.glass-onboard strong {
-    color: var(--text);
-    font-weight: 600;
-}
-
 /* A turn row: role label above a bubble/body. */
 .glass-row {
     display: flex;
@@ -1048,6 +1022,24 @@ body {
     border-radius: 50%;
     background: #b6b6bd;
     animation: glass-pending-bounce 1.2s infinite ease-in-out;
+}
+
+/* Plain-text cancel beside a per-question thinking row. */
+.glass-pending__cancel {
+    margin-left: 6px;
+    padding: 2px 8px;
+    color: var(--text-dim);
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    font: inherit;
+    font-size: 11px;
+    cursor: pointer;
+}
+
+.glass-pending__cancel:hover {
+    color: rgb(39, 39, 39);
+    border-color: #cfcfd5;
 }
 
 .glass-pending__label {
@@ -1228,36 +1220,6 @@ body {
     display: none;
 }
 
-/* Live dictation transcript (word-by-word animated reveal). Mirrors the input
-   box metrics so the composer height stays stable when starting/stopping. */
-.glass-transcript {
-    flex: 1 1 auto;
-    min-height: 20px;
-    max-height: 84px;
-    overflow-y: auto;
-    scrollbar-width: none;
-    -ms-overflow-style: none;
-    padding: 4px 0;
-    font-size: 13.5px;
-    line-height: 1.4;
-    color: var(--text);
-}
-
-.glass-transcript::-webkit-scrollbar {
-    width: 0;
-    height: 0;
-    display: none;
-}
-
-.glass-transcript--empty {
-    color: #a6a6ad;
-}
-
-.glass-transcript__word {
-    display: inline-block;
-    white-space: pre;
-}
-
 /* Animated voice equalizer shown on the mic button while recording. */
 .glass-voicebars {
     display: inline-flex;
@@ -1272,6 +1234,42 @@ body {
     border-radius: 2px;
     background: currentColor;
     transform-origin: center;
+}
+
+/* Live waveform while recording — pure CSS, staggered per bar. */
+.glass-voicebars--active .glass-voicebars__bar {
+    animation: glass-voicebars-wave 0.85s ease-in-out infinite;
+}
+
+.glass-voicebars--active .glass-voicebars__bar:nth-child(2) {
+    animation-delay: 0.13s;
+}
+
+.glass-voicebars--active .glass-voicebars__bar:nth-child(3) {
+    animation-delay: 0.26s;
+}
+
+.glass-voicebars--active .glass-voicebars__bar:nth-child(4) {
+    animation-delay: 0.39s;
+}
+
+@keyframes glass-voicebars-wave {
+
+    0%,
+    100% {
+        transform: scaleY(0.3);
+    }
+
+    50% {
+        transform: scaleY(1);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .glass-voicebars--active .glass-voicebars__bar {
+        animation: none;
+        transform: scaleY(0.75);
+    }
 }
 
 .glass-input::placeholder {
@@ -1755,76 +1753,41 @@ body {
     background: var(--bg-subtle);
 }
 
+/* The paperclip opens a small chooser (Camera / Files), reusing the model-menu
+   look. It sits on the LEFT of the composer, so anchor the panel's left edge. */
+.glass-attach-wrap {
+    flex: 0 0 auto;
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+}
+
+.glass-attach-menu {
+    left: 0;
+    right: auto;
+    width: 224px;
+}
+
 /* The real file input is hidden; the Add file button proxies clicks to it. */
 .glass-file-input {
     display: none;
 }
 
-/* Collapsible voice-engine pill: a mic glyph that expands to reveal V1/V2. */
-.glass-voicepill {
+/* Standalone dictation mic (single engine — no picker, no caret). Shaped like
+   the neighboring composer buttons (paperclip / send). */
+.glass-voicepill__mic {
     -webkit-app-region: no-drag;
-    position: relative;
     flex: 0 0 auto;
     display: inline-flex;
     align-items: center;
-    gap: 2px;
-    padding: 2px;
-    /* White, matching the Model pill (transparent over the white composer). */
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    color: var(--text);
     background: transparent;
     border: 1px solid var(--border);
     border-radius: 15px;
-}
-
-/* Caret that opens the voice-engine dropdown (mirrors the model pill caret). */
-.glass-voicepill__caret {
-    -webkit-app-region: no-drag;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 22px;
-    height: 24px;
-    padding: 0;
-    color: var(--text-dim);
-    background: transparent;
-    border: none;
-    border-radius: 12px;
-    cursor: pointer;
-}
-
-.glass-voicepill__caret:hover {
-    color: var(--text);
-    background: var(--bg-subtle);
-}
-
-/* Voice-engine dropdown: opens straight up, right-aligned to the pill. */
-.glass-voice-menu {
-    position: absolute;
-    bottom: calc(100% + 8px);
-    right: 0;
-    left: auto;
-    z-index: 11;
-    width: 160px;
-    padding: 5px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.16);
-}
-
-/* The mic glyph inside the pill toggles dictation (replaces the old separate
-   mic button that used to sit on the right). */
-.glass-voicepill__mic {
-    -webkit-app-region: no-drag;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 26px;
-    height: 24px;
-    padding: 0;
-    color: var(--text);
-    background: transparent;
-    border: none;
-    border-radius: 12px;
     cursor: pointer;
 }
 
@@ -1841,30 +1804,128 @@ body {
     cursor: default;
 }
 
-/* The version label; click to expand the V1/V2 chips. */
-.glass-voicepill__label-btn {
-    -webkit-app-region: no-drag;
-    height: 24px;
-    min-width: 26px;
-    padding: 0 8px;
+/* In-chat AI key setup card ------------------------------------------------ */
+.glass-setupcard {
+    max-width: 440px;
+    padding: 16px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+}
+
+.glass-setupcard__title {
+    font-size: 14px;
+    font-weight: 600;
+    color: rgb(39, 39, 39);
+}
+
+.glass-setupcard__sub {
+    margin: 6px 0 12px;
+    font-size: 12.5px;
+    line-height: 1.45;
+    color: var(--text-dim);
+}
+
+.glass-setupcard__tabs {
+    display: flex;
+    gap: 6px;
+}
+
+.glass-setupcard__tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
     color: var(--text-dim);
     background: transparent;
-    border: none;
-    border-radius: 12px;
+    border: 1px solid var(--border);
+    border-radius: 15px;
     font: inherit;
-    font-size: 11.5px;
-    font-weight: 500;
-    letter-spacing: 0.02em;
+    font-size: 12.5px;
     cursor: pointer;
 }
 
-.glass-voicepill__label-btn:hover:not(:disabled) {
-    color: var(--text);
+.glass-setupcard__tab--on {
+    color: rgb(39, 39, 39);
+    background: #eeeeee;
+    border-color: transparent;
 }
 
-.glass-voicepill__label-btn:disabled {
+.glass-setupcard__free {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #15803d;
+}
+
+.glass-setupcard__hint {
+    margin: 12px 0 6px;
+    font-size: 12px;
+    color: var(--text-dim);
+}
+
+.glass-setupcard__hint strong {
+    color: rgb(39, 39, 39);
+    font-weight: 600;
+}
+
+.glass-setupcard__row {
+    display: flex;
+    gap: 8px;
+}
+
+.glass-setupcard__input {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 8px 10px;
+    font-size: 13px;
+    color: var(--text);
+    background: var(--field-bg);
+    border: 1px solid var(--field-border);
+    border-radius: 8px;
+    outline: none;
+}
+
+.glass-setupcard__connect {
+    flex: 0 0 auto;
+    padding: 8px 14px;
+    color: #ffffff;
+    background: var(--accent);
+    border: none;
+    border-radius: 8px;
+    font: inherit;
+    font-size: 12.5px;
+    font-weight: 550;
+    cursor: pointer;
+}
+
+.glass-setupcard__connect:disabled {
     opacity: 0.5;
     cursor: default;
+}
+
+.glass-setupcard__error {
+    margin: 8px 0 0;
+    font-size: 12px;
+    color: #9a2530;
+}
+
+.glass-setupcard__alt {
+    margin-top: 12px;
+    padding: 0;
+    color: var(--text-dim);
+    background: transparent;
+    border: none;
+    font: inherit;
+    font-size: 11.5px;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    cursor: pointer;
+}
+
+.glass-setupcard__alt:hover {
+    color: rgb(39, 39, 39);
 }
 
 /* Rich code blocks + Claude-style right-hand code panel ------------------- */
@@ -2067,105 +2128,11 @@ body {
     }
 }
 
-/* Reusable operator task templates --------------------------------------- */
-.glass-template-wrap {
-    position: relative;
-    flex: 0 0 auto;
-    display: inline-flex;
-}
-
-.glass-template-btn {
-    -webkit-app-region: no-drag;
-    height: 30px;
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    padding: 0 9px;
-    color: var(--text-dim);
-    background: transparent;
-    border: 1px solid var(--border);
-    border-radius: 15px;
-    font: inherit;
-    font-size: 12.5px;
-    cursor: pointer;
-}
-
-.glass-template-btn:hover {
-    color: var(--text);
-    background: var(--bg-subtle);
-}
-
-.glass-template-menu {
-    position: absolute;
-    left: 0;
-    bottom: calc(100% + 8px);
-    z-index: 11;
-    width: min(320px, calc(100vw - 24px));
-    max-height: 330px;
-    overflow-y: auto;
-    padding: 5px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.16);
-    scrollbar-width: none;
-}
-
-.glass-template-menu::-webkit-scrollbar {
-    display: none;
-}
-
-.glass-template-section {
-    padding: 6px 8px 4px;
-    font-size: 10.5px;
-    font-weight: 500;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    color: var(--text-dim);
-}
-
-.glass-template-section--recent {
-    margin-top: 4px;
-    padding-top: 9px;
-    border-top: 1px solid var(--border);
-}
-
-.glass-template-item {
-    width: 100%;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding: 8px;
-    text-align: left;
-    color: var(--text);
-    background: transparent;
-    border: none;
-    border-radius: 8px;
-    font: inherit;
-    cursor: pointer;
-}
-
-.glass-template-item:hover {
-    background: var(--bg-subtle);
-}
-
-.glass-template-item__label {
-    font-size: 12.5px;
-    font-weight: 500;
-    line-height: 1.3;
-}
-
-.glass-template-item__description {
-    font-size: 11px;
-    line-height: 1.35;
-    color: var(--text-dim);
-}
-
 /* Persistent chat rail ---------------------------------------------------- */
 .glass-nav {
     flex-basis: 296px;
     width: 296px;
-    background: rgb(241, 241, 241);
+    background: transparent;
 }
 
 .glass-nav__top {
@@ -2198,7 +2165,7 @@ body {
 .glass-nav__collapse:hover,
 .glass-nav__collapse:focus-visible {
     color: var(--text);
-    background: #ececef;
+    background: transparent;
 }
 
 .glass-nav__primary {
@@ -2209,29 +2176,29 @@ body {
     padding: 3px 10px 7px;
 }
 
+/* New chat matches the mode button below it: quiet, borderless, same hover. */
 .glass-nav__new {
     width: 100%;
-    min-height: 34px;
+    min-height: 32px;
     display: flex;
     align-items: center;
     gap: 9px;
     padding: 7px 10px;
-    color: var(--text);
-    background: #ffffff;
-    border: 1px solid #dedee3;
-    border-radius: 10px;
+    color: rgb(39, 39, 39);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 9px;
     font: inherit;
     font-size: 13px;
-    font-weight: 550;
+    font-weight: 400;
     text-align: left;
     cursor: pointer;
-    box-shadow: 0 1px 2px rgba(17, 17, 20, 0.04);
 }
 
 .glass-nav__new:hover,
 .glass-nav__new:focus-visible {
-    background: #fdfdfe;
-    border-color: #cfcfd5;
+    background: transparent;
+    border-color: transparent;
 }
 
 .glass-nav__primary .glass-modebtn {
@@ -2240,6 +2207,7 @@ body {
     align-items: center;
     gap: 9px;
     padding: 7px 10px;
+    color: rgb(39, 39, 39);
     border-color: transparent;
     border-radius: 9px;
 }
@@ -2249,9 +2217,16 @@ body {
     flex: 0 0 auto;
 }
 
-.glass-nav__primary .glass-modebtn:hover,
-.glass-nav__primary .glass-modebtn--on {
-    background: #ececef;
+.glass-nav__primary .glass-modebtn:hover {
+    background: transparent;
+    border-color: transparent;
+}
+
+/* Selected fill for sidebar items. */
+.glass-nav__primary .glass-modebtn--on,
+.glass-nav__primary .glass-modebtn--on:hover {
+    color: rgb(39, 39, 39);
+    background: #eeeeee;
     border-color: transparent;
 }
 
@@ -2272,18 +2247,6 @@ body {
     line-height: 1.45;
 }
 
-.glass-history__group-label {
-    padding: 15px 10px 5px;
-    font-size: 10.5px;
-    font-weight: 600;
-    letter-spacing: 0.025em;
-    color: #85858d;
-}
-
-.glass-history__group:first-child .glass-history__group-label {
-    padding-top: 6px;
-}
-
 .glass-history__item {
     align-items: center;
     gap: 7px;
@@ -2292,19 +2255,20 @@ body {
     border-radius: 10px;
 }
 
+/* Running rows: sized by their two lines, with a little air below the
+   status line so it never sits flush against the pill's bottom edge. */
 .glass-history__item--running {
     align-items: flex-start;
-    min-height: 56px;
-    padding-block: 8px;
+    padding-block: 8px 11px;
 }
 
 .glass-history__item:hover {
-    background: #efeff2;
+    background: transparent;
 }
 
 .glass-history__item--selected,
 .glass-history__item--selected:hover {
-    background: #e8e8ec;
+    background: #eeeeee;
 }
 
 .glass-history__status {
@@ -2316,13 +2280,13 @@ body {
     justify-content: center;
 }
 
+/* A plain bulb: the dot fades on and off in place — no ring, no size change. */
 .glass-history__running-dot {
     display: block;
     width: 7px;
     height: 7px;
     border-radius: 50%;
     background: #23a66f;
-    box-shadow: 0 0 0 2px rgba(35, 166, 111, 0.1);
     animation: glass-running-breathe 1.55s ease-in-out infinite;
 }
 
@@ -2330,13 +2294,11 @@ body {
 
     0%,
     100% {
-        opacity: 0.38;
-        box-shadow: 0 0 0 1px rgba(35, 166, 111, 0.08);
+        opacity: 0.2;
     }
 
     50% {
         opacity: 1;
-        box-shadow: 0 0 0 4px rgba(35, 166, 111, 0.13);
     }
 }
 
@@ -2346,12 +2308,12 @@ body {
 
 .glass-history__item-title {
     font-size: 12.75px;
-    font-weight: 600;
+    font-weight: 400;
     line-height: 1.3;
+    color: rgb(39, 39, 39);
 }
 
 .glass-history__item-description {
-    min-height: 28px;
     display: -webkit-box;
     overflow: hidden;
     -webkit-box-orient: vertical;
@@ -2374,8 +2336,6 @@ body {
     flex-direction: column;
     gap: 3px;
     padding: 8px;
-    background: linear-gradient(to bottom, rgba(241, 241, 241, 0.9), rgb(241, 241, 241) 22%);
-    border-top: 1px solid #e8e8ec;
 }
 
 .glass-nav__footer-button {
@@ -2385,7 +2345,7 @@ body {
     align-items: center;
     gap: 9px;
     padding: 7px 9px;
-    color: var(--text-dim);
+    color: rgb(39, 39, 39);
     background: transparent;
     border: none;
     border-radius: 9px;
@@ -2396,10 +2356,15 @@ body {
 }
 
 .glass-nav__footer-button:hover:not(:disabled),
-.glass-nav__footer-button:focus-visible,
-.glass-nav__footer-button--selected {
-    color: var(--text);
-    background: #eaeaee;
+.glass-nav__footer-button:focus-visible {
+    color: rgb(39, 39, 39);
+    background: transparent;
+}
+
+.glass-nav__footer-button--selected,
+.glass-nav__footer-button--selected:hover:not(:disabled) {
+    color: rgb(39, 39, 39);
+    background: #eeeeee;
 }
 
 .glass-nav__footer-button:disabled {
@@ -2430,7 +2395,7 @@ body {
 }
 
 .glass-nav__footer-copy>span:first-child {
-    color: var(--text);
+    color: rgb(39, 39, 39);
     font-weight: 550;
 }
 
@@ -2464,12 +2429,12 @@ body {
 
 .glass-account__logout:hover:not(:disabled) {
     color: var(--text);
-    background: #eaeaee;
+    background: transparent;
 }
 
 .glass-account-code {
     display: grid;
-    grid-template-columns: auto 1fr auto;
+    grid-template-columns: auto 1fr auto auto;
     align-items: center;
     gap: 7px;
     margin: 0 2px 4px;
@@ -2481,14 +2446,24 @@ body {
     font-size: 10px;
 }
 
+/* The one-time code itself: plain text, monospaced, easy to read out. */
+.glass-account-code__value {
+    color: rgb(39, 39, 39);
+    font: 600 11.5px/1.4 'SF Mono', ui-monospace, Menlo, monospace;
+    letter-spacing: 0.06em;
+}
+
+/* Plain text action buttons (Copy / Reopen) — no icons, no decoration. */
 .glass-account-code button {
-    padding: 2px 5px;
-    color: var(--text);
-    background: #f2f2f4;
+    padding: 2px 6px;
+    color: rgb(39, 39, 39);
+    background: #eeeeee;
     border: none;
     border-radius: 5px;
-    font: 600 11px/1.4 'SF Mono', ui-monospace, Menlo, monospace;
-    letter-spacing: 0.04em;
+    font-family: inherit;
+    font-size: 10.5px;
+    font-weight: 550;
+    line-height: 1.5;
     cursor: pointer;
 }
 
@@ -2498,7 +2473,8 @@ body {
         inset: 0 auto 0 0;
         z-index: 30;
         display: flex;
-        background: rgb(241, 241, 241);
+        /* Overlay mode floats above the chat, so it needs a solid fill. */
+        background: var(--app-bg);
         box-shadow: 10px 0 34px rgba(0, 0, 0, 0.16);
     }
 
@@ -2531,28 +2507,10 @@ body {
 
     .glass-history__running-dot {
         opacity: 1;
-        box-shadow: 0 0 0 2px rgba(35, 166, 111, 0.1);
     }
 }
 
-/* Rich icon tiles and video attachments ---------------------------------- */
-.glass-nav__footer-icon {
-    flex-basis: 28px;
-    width: 28px;
-    height: 28px;
-    color: #29292e;
-    background: rgba(255, 255, 255, 0.78);
-    border: 1px solid rgba(24, 24, 28, 0.08);
-    border-radius: 8px;
-    box-shadow: 0 1px 2px rgba(20, 20, 24, 0.04);
-}
-
-.glass-nav__footer-button:hover .glass-nav__footer-icon,
-.glass-nav__footer-button--selected .glass-nav__footer-icon {
-    background: #ffffff;
-    border-color: rgba(24, 24, 28, 0.12);
-}
-
+/* Video attachments ------------------------------------------------------- */
 .glass-shot--video {
     width: 178px;
 }
@@ -2878,4 +2836,208 @@ body {
     .glass-recorder__live span {
         animation: none;
     }
+}
+
+/* --- Playbooks: saved operator task templates (New-task workspace) ------- */
+
+.glass-playbooks {
+    margin: 10px 0 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.glass-playbooks__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 4px 6px;
+}
+
+.glass-playbooks__title {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(39, 39, 39, 0.55);
+}
+
+.glass-playbooks__save {
+    border: none;
+    background: #eeeeee;
+    color: rgb(39, 39, 39);
+    border-radius: 999px;
+    padding: 4px 10px;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.glass-playbooks__save:hover {
+    background: #e3e3e3;
+}
+
+.glass-playbook {
+    display: flex;
+    align-items: stretch;
+    gap: 2px;
+}
+
+.glass-playbook__run {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    text-align: left;
+    border: none;
+    background: transparent;
+    border-radius: 10px;
+    padding: 8px 10px;
+    cursor: pointer;
+}
+
+.glass-playbook__run:hover {
+    background: #f3f3f3;
+}
+
+.glass-playbook__name {
+    font-size: 13px;
+    font-weight: 600;
+    color: rgb(39, 39, 39);
+}
+
+.glass-playbook__goal {
+    font-size: 12px;
+    color: rgba(39, 39, 39, 0.6);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.glass-playbook__delete {
+    border: none;
+    background: transparent;
+    color: rgba(39, 39, 39, 0.45);
+    font-size: 15px;
+    line-height: 1;
+    border-radius: 8px;
+    padding: 0 9px;
+    cursor: pointer;
+}
+
+.glass-playbook__delete:hover {
+    background: #f3f3f3;
+    color: rgb(39, 39, 39);
+}
+
+.glass-playbooks__empty {
+    font-size: 12px;
+    color: rgba(39, 39, 39, 0.5);
+    padding: 2px 4px 6px;
+}
+
+/* --- Playbook daily-schedule controls ------------------------------------ */
+
+.glass-playbook__schedule {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 2px;
+}
+
+.glass-playbook__time {
+    border: none;
+    background: transparent;
+    color: rgba(39, 39, 39, 0.65);
+    font-size: 11.5px;
+    border-radius: 6px;
+    padding: 2px 4px;
+}
+
+.glass-playbook__time:hover,
+.glass-playbook__time:focus {
+    background: #f3f3f3;
+    outline: none;
+}
+
+.glass-playbook__toggle {
+    border: none;
+    background: transparent;
+    color: rgba(39, 39, 39, 0.45);
+    font-size: 11px;
+    border-radius: 999px;
+    padding: 3px 8px;
+    cursor: pointer;
+}
+
+.glass-playbook__toggle:hover {
+    background: #f3f3f3;
+}
+
+.glass-playbook__toggle--on {
+    background: #eeeeee;
+    color: rgb(39, 39, 39);
+    font-weight: 600;
+}
+
+/* --- Mail connector: staged-email chip above the composer ---------------- */
+
+.glass-mailchip {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 14px 6px;
+    padding: 7px 10px;
+    background: #f5f5f5;
+    border-radius: 10px;
+}
+
+.glass-mailchip__icon {
+    display: flex;
+    align-items: center;
+    color: rgba(39, 39, 39, 0.6);
+    flex: none;
+}
+
+.glass-mailchip__text {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+
+.glass-mailchip__subject {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: rgb(39, 39, 39);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.glass-mailchip__sender {
+    font-size: 11.5px;
+    color: rgba(39, 39, 39, 0.55);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.glass-mailchip__remove {
+    border: none;
+    background: transparent;
+    color: rgba(39, 39, 39, 0.5);
+    font-size: 15px;
+    line-height: 1;
+    border-radius: 8px;
+    padding: 2px 7px;
+    cursor: pointer;
+    flex: none;
+}
+
+.glass-mailchip__remove:hover {
+    background: #e9e9e9;
+    color: rgb(39, 39, 39);
 }

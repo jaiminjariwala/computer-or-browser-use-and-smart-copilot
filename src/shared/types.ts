@@ -88,7 +88,33 @@ export interface SessionContext {
     recentTurns: Turn[]
     /** The capture being interpreted on this request, if any. */
     currentCapture?: TurnCapture
+    /**
+     * Persistent user memory: facts/preferences the user explicitly asked the
+     * assistant to keep (oldest first). Folded into completions as a system
+     * message when present.
+     */
+    memories?: string[]
 }
+
+/** One persistent-memory entry (local, user-auditable, deletable). */
+export interface MemoryEntry {
+    id: string
+    text: string
+    createdAt: string
+}
+
+/** The message currently selected in Apple Mail (Mail connector). */
+export interface SelectedEmail {
+    subject: string
+    sender: string
+    receivedAt: string
+    body: string
+}
+
+/** Result of reading the selected Mail message. */
+export type MailReadResult =
+    | { ok: true; email: SelectedEmail }
+    | { ok: false; error: string }
 
 /** How the user draws the capture region. */
 export type CaptureMode = 'circle' | 'rectangle'
@@ -98,13 +124,8 @@ export interface GatewayConfig {
     baseURL: string
     /** Vision-capable model id on the gateway. */
     model: string
-    /** Optional fallback gateway used when the primary is unavailable. */
-    fallbackBaseURL?: string
-    /** Model id to use on the fallback gateway. */
-    fallbackModel?: string
-    /** Optional model overrides for the built-in free hosted fallback chain. */
+    /** Optional model overrides for the built-in free hosted providers. */
     openrouterModel?: string
-    glmModel?: string
     geminiModel?: string
     /** How the capture region is drawn (defaults to 'circle'). */
     captureMode?: CaptureMode
@@ -122,20 +143,13 @@ export interface GatewayConfigInput {
     baseURL: string
     model: string
     apiKey: string
-    /** Optional fallback gateway (e.g. local Ollama) used when primary fails. */
-    fallbackBaseURL?: string
-    fallbackModel?: string
-    /** Empty/whitespace leaves the stored fallback key unchanged. */
-    fallbackApiKey?: string
     /**
-     * Built-in free hosted fallback chain (tried in order after the primary,
-     * before the on-device model). Each key is persisted encrypted; empty
-     * leaves the stored key unchanged. The model fields are optional overrides.
+     * Built-in free hosted providers (tried in order after the primary). Each
+     * key is persisted encrypted; empty leaves the stored key unchanged. The
+     * model fields are optional overrides.
      */
     openrouterApiKey?: string
     openrouterModel?: string
-    glmApiKey?: string
-    glmModel?: string
     geminiApiKey?: string
     geminiModel?: string
     /** How the capture region is drawn. */
@@ -152,15 +166,9 @@ export interface ConfigStatus {
     hasCredentials: boolean
     baseURL: string
     model: string
-    /** Fallback gateway settings (non-secret) + whether it is configured. */
-    fallbackBaseURL: string
-    fallbackModel: string
-    hasFallback: boolean
-    /** Built-in free hosted fallback chain: whether each has a key + its model. */
+    /** Built-in free hosted providers: whether each has a key + its model. */
     hasOpenrouter: boolean
     openrouterModel: string
-    hasGlm: boolean
-    glmModel: string
     hasGemini: boolean
     geminiModel: string
     /** How the capture region is drawn. */
@@ -292,16 +300,28 @@ export interface GlassBridge {
     listModels(): Promise<string[]>
     /** Transcribe a recorded audio clip (base64) to text (speech-to-text). */
     transcribe(audioBase64: string, format: string): Promise<string>
+    // Persistent memory (Settings audit surface). Mutations return the updated
+    // list so the renderer swaps state in one round-trip.
+    /** Every persistent-memory entry, newest first. */
+    listMemories(): Promise<MemoryEntry[]>
+    /** Store a memory typed in Settings. */
+    addMemory(text: string): Promise<MemoryEntry[]>
+    /** Delete one memory by id. */
+    deleteMemory(id: string): Promise<MemoryEntry[]>
+    /** Forget every stored memory. */
+    clearMemories(): Promise<MemoryEntry[]>
+    /** Read the message currently selected in Mail or Outlook (email connector). */
+    readSelectedMail(source?: 'mail' | 'outlook'): Promise<MailReadResult>
     /** Read non-secret config/credential status (Req 7.4). */
     getConfigStatus(): Promise<ConfigStatus>
     /** Persist gateway settings; the API key is stored encrypted (Req 7.2). */
     saveConfig(cfg: GatewayConfigInput): Promise<void>
-    /** Pin/unpin the window on top of other windows (floating-panel toggle). */
-    setPinned(pinned: boolean): Promise<void>
     /** Read the non-secret GitHub authentication state. */
     getGitHubAuthStatus(): Promise<GitHubAuthStatus>
     /** Begin GitHub Device Flow and open its verification page in the browser. */
     startGitHubLogin(): Promise<GitHubDeviceChallenge>
+    /** Reopen the GitHub page for the in-flight device code (closed-tab rescue). */
+    openGitHubVerification(): Promise<void>
     /** Remove the encrypted GitHub token and local identity state. */
     logoutGitHub(): Promise<void>
 
@@ -329,13 +349,20 @@ export interface GlassBridge {
      * The gateway failed and the request should be answered by the zero-config
      * local fallback model in the renderer; the full context is provided.
      */
-    onGatewayFallback(cb: (ctx: SessionContext, originId: string) => void): () => void
+    /** No AI provider is configured — show the in-chat key setup card. */
+    onSetupNeeded(cb: () => void): () => void
+    /** A question began processing; id = the asking user turn's id. */
+    onRequestStarted(cb: (requestId: string) => void): () => void
+    /** That question finished — answered, failed, or cancelled. */
+    onRequestSettled(cb: (requestId: string) => void): () => void
+    /** Cancel a still-thinking question; its late answer will be dropped. */
+    cancelRequest(requestId: string): Promise<void>
     /**
      * Report the local fallback model's answer (or null when it failed).
      * `originId` echoes back the session the request started in so the answer
      * lands in the right chat even if the user has since switched chats.
      */
-    submitFallbackResult(text: string | null, originId: string): Promise<void>
+
 
     // Overlay -> main
     /** Submit the selected capture rectangle with an optional follow-up (Req 4.3). */

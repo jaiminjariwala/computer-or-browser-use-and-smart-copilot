@@ -183,9 +183,23 @@ export function describeStep(step: TrajectoryStepView): StepItem {
         return { label: 'Task complete', meta, kind: 'completion' }
     }
     if (step.outcome === 'failure') {
+        // A completion claim bounced by the evidence gate is progress-shaped
+        // feedback, not an inscrutable failure — say what actually happened.
+        const unverified = step.rationale?.startsWith('completion-unverified:')
+        // Rate limits are an account/quota condition, not a reasoning bug;
+        // hiding them behind generic copy sent users down the wrong path.
+        const rateLimited = /\b429\b|rate.?limit|too many requests|quota/i.test(step.rationale ?? '')
         return {
-            label: 'Could not complete the task',
-            sub: 'Reasoning did not produce a usable next step.',
+            label: unverified
+                ? 'Rejected a premature "task complete"'
+                : rateLimited
+                    ? 'Model provider rate-limited the request'
+                    : 'Could not complete the task',
+            sub: unverified
+                ? 'The claim had no matching on-screen evidence; the agent keeps working.'
+                : rateLimited
+                    ? 'Free-tier quota hit (HTTP 429). Wait a bit, or switch to a model with spare quota.'
+                    : 'Reasoning did not produce a usable next step.',
             meta,
             kind: 'failure',
             status: 'failure'

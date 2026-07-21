@@ -6,6 +6,8 @@ import type {
     GitHubDeviceChallenge,
     GlassBridge,
     GlassError,
+    MailReadResult,
+    MemoryEntry,
     Rect,
     SessionContext,
     SessionListItem,
@@ -56,14 +58,24 @@ const bridge: GlassBridge = {
     listModels: (): Promise<string[]> => ipcRenderer.invoke('models:list'),
     transcribe: (audioBase64: string, format: string): Promise<string> =>
         ipcRenderer.invoke('audio:transcribe', { audioBase64, format }),
+    listMemories: (): Promise<MemoryEntry[]> => ipcRenderer.invoke('memory:list'),
+    addMemory: (text: string): Promise<MemoryEntry[]> =>
+        ipcRenderer.invoke('memory:add', { text }),
+    deleteMemory: (id: string): Promise<MemoryEntry[]> =>
+        ipcRenderer.invoke('memory:delete', { id }),
+    clearMemories: (): Promise<MemoryEntry[]> => ipcRenderer.invoke('memory:clear'),
+    readSelectedMail: (source?: 'mail' | 'outlook'): Promise<MailReadResult> =>
+        ipcRenderer.invoke('mail:read-selected', { source: source ?? 'mail' }),
     getConfigStatus: (): Promise<ConfigStatus> => ipcRenderer.invoke('config:get-status'),
     saveConfig: (cfg: GatewayConfigInput): Promise<void> => ipcRenderer.invoke('config:save', cfg),
-    setPinned: (pinned: boolean): Promise<void> => ipcRenderer.invoke('window:set-pinned', pinned),
+
     getGitHubAuthStatus: (): Promise<GitHubAuthStatus> =>
         ipcRenderer.invoke('github-auth:status'),
     startGitHubLogin: (): Promise<GitHubDeviceChallenge> =>
         ipcRenderer.invoke('github-auth:start'),
     logoutGitHub: (): Promise<void> => ipcRenderer.invoke('github-auth:logout'),
+    openGitHubVerification: (): Promise<void> =>
+        ipcRenderer.invoke('github-auth:open-verification'),
 
     // main -> Sidebar (event subscriptions)
     onGitHubAuthChanged: (cb: (status: GitHubAuthStatus) => void): (() => void) =>
@@ -81,10 +93,13 @@ const bridge: GlassBridge = {
         subscribe<[SessionSummary]>('summary:state', cb),
     onCaptureStaged: (cb: (capture: TurnCapture) => void): (() => void) =>
         subscribe<[TurnCapture]>('capture:staged', cb),
-    onGatewayFallback: (cb: (ctx: SessionContext, originId: string) => void): (() => void) =>
-        subscribe<[SessionContext, string]>('chat:fallback', cb),
-    submitFallbackResult: (text: string | null, originId: string): Promise<void> =>
-        ipcRenderer.invoke('chat:fallback-result', { text, originId }),
+    onSetupNeeded: (cb: () => void): (() => void) => subscribe<[]>('setup:needed', cb),
+    onRequestStarted: (cb: (requestId: string) => void): (() => void) =>
+        subscribe<[string]>('request:started', cb),
+    onRequestSettled: (cb: (requestId: string) => void): (() => void) =>
+        subscribe<[string]>('request:settled', cb),
+    cancelRequest: (requestId: string): Promise<void> =>
+        ipcRenderer.invoke('chat:cancel', { requestId }),
 
     // Overlay -> main
     submitRegion: (rect: Rect, text?: string): Promise<void> =>
@@ -117,7 +132,9 @@ import type {
     PermissionSnapshot,
     ProviderChainView,
     ProviderChainInput,
-    ProviderStatus
+    ProviderStatus,
+    Playbook,
+    PlaybookInput
 } from '@op-shared/types'
 
 const operatorBridge: OperatorBridge = {
@@ -138,6 +155,11 @@ const operatorBridge: OperatorBridge = {
         ipcRenderer.invoke('op:session:open', { id }),
     deleteSessions: (ids: string[]): Promise<void> =>
         ipcRenderer.invoke('op:session:delete', { ids }),
+    listPlaybooks: (): Promise<Playbook[]> => ipcRenderer.invoke('op:playbooks:list'),
+    savePlaybook: (input: PlaybookInput): Promise<Playbook[]> =>
+        ipcRenderer.invoke('op:playbooks:save', input),
+    deletePlaybooks: (ids: string[]): Promise<Playbook[]> =>
+        ipcRenderer.invoke('op:playbooks:delete', { ids }),
     getConfigStatus: () => ipcRenderer.invoke('op:config:get-status'),
     saveConfig: (cfg): Promise<void> => ipcRenderer.invoke('op:config:save', cfg),
     getPermissions: (): Promise<PermissionSnapshot> => ipcRenderer.invoke('op:perm:get'),

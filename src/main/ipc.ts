@@ -1,6 +1,8 @@
 import { ipcMain, type BrowserWindow } from 'electron'
 import type {
     GlassError,
+    MailReadResult,
+    MemoryEntry,
     Rect,
     SessionContext,
     SessionListItem,
@@ -59,13 +61,18 @@ export interface GlassIpcDeps {
     onListModels?: () => string[] | Promise<string[]>
     /** `audio:transcribe` — speech-to-text for a recorded audio clip. */
     onTranscribe?: (audioBase64: string, format: string) => string | Promise<string>
-    /**
-     * `chat:fallback-result` — the renderer's local fallback model produced an
-     * answer (or null when it too failed) for a gateway request that fell back.
-     * `originId` echoes the session the request started in so the answer lands
-     * in the right chat even if the user has since switched chats.
-     */
-    onFallbackResult?: (text: string | null, originId: string) => void | Promise<void>
+    /** `chat:cancel` — the user cancelled a still-thinking question. */
+    onCancelRequest?: (requestId: string) => void
+    /** `memory:list` — every persistent-memory entry (Settings audit view). */
+    onListMemories?: () => MemoryEntry[] | Promise<MemoryEntry[]>
+    /** `memory:add` — store a memory typed in Settings. Returns updated list. */
+    onAddMemory?: (text: string) => MemoryEntry[] | Promise<MemoryEntry[]>
+    /** `memory:delete` — delete one entry. Returns updated list. */
+    onDeleteMemory?: (id: string) => MemoryEntry[] | Promise<MemoryEntry[]>
+    /** `memory:clear` — forget everything. */
+    onClearMemories?: () => MemoryEntry[] | Promise<MemoryEntry[]>
+    /** `mail:read-selected` — read the message selected in Mail or Outlook. */
+    onReadSelectedMail?: (source: 'mail' | 'outlook') => MailReadResult | Promise<MailReadResult>
 }
 
 const EMPTY_SUMMARY: SessionSummary = {
@@ -142,6 +149,39 @@ export function registerGlassIpc(deps: GlassIpcDeps): () => void {
     ipcMain.handle('models:list', async (): Promise<string[]> => {
         return (await deps.onListModels?.()) ?? []
     })
+    ipcMain.handle('memory:list', async (): Promise<MemoryEntry[]> => {
+        return (await deps.onListMemories?.()) ?? []
+    })
+    ipcMain.handle(
+        'memory:add',
+        async (_event, payload: { text?: string } | undefined): Promise<MemoryEntry[]> => {
+            const text = payload?.text?.trim() ?? ''
+            if (text.length === 0) return (await deps.onListMemories?.()) ?? []
+            return (await deps.onAddMemory?.(text)) ?? []
+        }
+    )
+    ipcMain.handle(
+        'memory:delete',
+        async (_event, payload: { id?: string } | undefined): Promise<MemoryEntry[]> => {
+            if (!payload?.id) return (await deps.onListMemories?.()) ?? []
+            return (await deps.onDeleteMemory?.(payload.id)) ?? []
+        }
+    )
+    ipcMain.handle('memory:clear', async (): Promise<MemoryEntry[]> => {
+        return (await deps.onClearMemories?.()) ?? []
+    })
+    ipcMain.handle(
+        'mail:read-selected',
+        async (_event, payload: { source?: string } | undefined): Promise<MailReadResult> => {
+            const source = payload?.source === 'outlook' ? 'outlook' : 'mail'
+            return (
+                (await deps.onReadSelectedMail?.(source)) ?? {
+                    ok: false,
+                    error: 'The email integration is not available in this build.'
+                }
+            )
+        }
+    )
 
     ipcMain.handle(
         'audio:transcribe',
@@ -155,12 +195,9 @@ export function registerGlassIpc(deps: GlassIpcDeps): () => void {
     )
 
     ipcMain.handle(
-        'chat:fallback-result',
-        async (
-            _event,
-            payload: { text: string | null; originId?: string } | undefined
-        ): Promise<void> => {
-            await deps.onFallbackResult?.(payload?.text ?? null, payload?.originId ?? '')
+        'chat:cancel',
+        (_event, payload: { requestId: string } | undefined): void => {
+            if (payload?.requestId) deps.onCancelRequest?.(payload.requestId)
         }
     )
 
@@ -168,7 +205,7 @@ export function registerGlassIpc(deps: GlassIpcDeps): () => void {
         for (const channel of [
             'chat:send',
             'chat:send-captures',
-            'chat:fallback-result',
+            'chat:cancel',
             'capture:trigger',
             'capture:region',
             'capture:cancel',
@@ -178,7 +215,12 @@ export function registerGlassIpc(deps: GlassIpcDeps): () => void {
             'session:open',
             'session:delete',
             'models:list',
-            'audio:transcribe'
+            'audio:transcribe',
+            'memory:list',
+            'memory:add',
+            'memory:delete',
+            'memory:clear',
+            'mail:read-selected'
         ]) {
             ipcMain.removeHandler(channel)
         }
@@ -228,14 +270,19 @@ export function emitCaptureStaged(window: WindowRef, capture: TurnCapture): void
 }
 
 /**
- * Ask the renderer's zero-config local fallback model to answer a request the
- * gateway could not (`chat:fallback`). The full derived context (summary +
- * recent turns + current capture) is sent so the model has what it needs.
+ * No AI provider is configured at all — tell the sidebar to show the in-chat
+ * key setup card (`setup:needed`) so the user can paste a key right there.
  */
-export function emitGatewayFallback(
-    window: WindowRef,
-    ctx: SessionContext,
-    originId: string
-): void {
-    window?.webContents.send('chat:fallback', ctx, originId)
+export function emitSetupNeeded(window: WindowRef): void {
+    window?.webContents.send('setup:needed')
+}
+
+/** A question began processing (`request:started`, id = its user turn). */
+export function emitRequestStarted(window: WindowRef, requestId: string): void {
+    window?.webContents.send('request:started', requestId)
+}
+
+/** A question finished — answered, failed, or cancelled (`request:settled`). */
+export function emitRequestSettled(window: WindowRef, requestId: string): void {
+    window?.webContents.send('request:settled', requestId)
 }

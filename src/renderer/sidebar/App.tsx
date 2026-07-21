@@ -1,13 +1,11 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import type { GlassError, SessionContext, SessionListItem, SessionSummary, SessionView, TurnCapture, TurnView } from '@shared/types'
-import type { AgentSessionView, ConfirmationRequest, LoopStateView } from '@op-shared/types'
+import type { GlassError, SessionListItem, SessionSummary, SessionView, TurnCapture, TurnView } from '@shared/types'
+import type { ConfirmationRequest, LoopStateView, Playbook } from '@op-shared/types'
+import type { SelectedEmail } from '@shared/types'
 import { Settings } from './Settings'
 import { ChatSidebar } from './ChatSidebar'
 import { VideoRecorder } from './VideoRecorder'
 import { extractVideoFrames, formatMediaDuration } from './video'
-import { CodeMarkdown } from './CodeBlock'
 import { CodePanel } from './CodePanel'
 import { CodePanelContext, type CodeArtifact } from './codePanelContext'
 import { extractCodeBlocks } from './codeTheme'
@@ -22,19 +20,11 @@ import {
     type StepItem
 } from './operator'
 import { renderPdfToImages } from './pdf'
-import { runLocalFallback, buildFallbackRequest } from './localFallback'
 import { curateForMode, friendlyLabel, type CuratedModels } from './models'
 import { routeIntent } from './intentRouter'
-import {
-    BUILT_IN_TASK_TEMPLATES,
-    clearRecentTaskTemplates,
-    loadRecentTaskTemplates,
-    rememberRecentTaskTemplate,
-    type OperatorTaskTemplate
-} from './taskTemplates'
+import { SetupCard } from './SetupCard'
 import { VoiceBars } from '../voice-lib'
-import { useSmoothDictation as useDictationV2 } from '../voice-lib-v2'
-import { useSmoothDictation as useDictationV3 } from '../voice-lib-v3'
+import { useSmoothDictation as useDictation } from '../voice-lib-v2'
 import {
     addUserMessage,
     appendTurn,
@@ -44,6 +34,36 @@ import {
     setPending,
     type ConversationState
 } from './conversation'
+import { getChatBridge, getOperatorBridge } from './bridges'
+import {
+    CaretIcon,
+    CheckIcon,
+    ChevronIcon,
+    ImageFileIcon,
+    MailIcon,
+    PaperclipIcon,
+    SendIcon,
+    StopIcon,
+    VideoCameraIcon
+} from './icons'
+import { GoalTracker, TurnBody } from './turns'
+import {
+    finderName,
+    formatEmailContext,
+    makeShotName,
+    MAX_STAGED_VIDEOS,
+    type StagedAttachment
+} from './attachments'
+import {
+    compactSidebarText,
+    friendlyProvider,
+    NAV_OVERLAY_BREAKPOINT,
+    OPERATOR_DRAFT_ID,
+    operatorViewToSteps,
+    operatorViewToTurns,
+    titleFromTurns
+} from './rail'
+import { HeaderSelect } from './HeaderSelect'
 
 /**
  * Sidebar shell + chat UI.
@@ -51,420 +71,6 @@ import {
  * Capture is triggered from the floating pencil window. Assistant guidance is
  * rendered as Markdown. The header exposes History, New, and Settings panels.
  */
-
-interface ChatBridge {
-    sendMessage(text: string): Promise<void>
-    sendCaptures(captures: TurnCapture[], text?: string): Promise<void>
-    newSession(): Promise<void>
-    getSession(): Promise<SessionView>
-    listSessions(): Promise<SessionListItem[]>
-    openSession(id: string): Promise<void>
-    deleteSessions(ids: string[]): Promise<void>
-    listModels(): Promise<string[]>
-    onTurnAppended(cb: (turn: TurnView) => void): void | (() => void)
-    onPending(cb: (pending: boolean) => void): void | (() => void)
-    onError(cb: (err: GlassError) => void): void | (() => void)
-    onSessionState?(cb: (session: SessionView) => void): void | (() => void)
-    onCredentialsRequired?(cb: () => void): void | (() => void)
-    onSummary?(cb: (summary: SessionSummary) => void): void | (() => void)
-    onCaptureStaged?(cb: (capture: TurnCapture) => void): void | (() => void)
-    onGatewayFallback?(cb: (ctx: SessionContext, originId: string) => void): void | (() => void)
-    submitFallbackResult?(text: string | null, originId: string): Promise<void>
-}
-
-function getChatBridge(): ChatBridge | null {
-    const glass = (window as unknown as { glass?: Partial<ChatBridge> }).glass
-    if (glass && typeof glass.sendMessage === 'function') {
-        return glass as ChatBridge
-    }
-    return null
-}
-
-/** The merged operator engine bridge, or null when it is not injected. */
-function getOperatorBridge(): NonNullable<typeof window.operator> | null {
-    const op = window.operator
-    return op && typeof op.startGoal === 'function' ? op : null
-}
-
-/** Markdown component overrides: render fenced code with the rich CodeBlock. */
-const MARKDOWN_COMPONENTS = {
-    code: CodeMarkdown,
-    // Our CodeBlock provides its own container, so drop the default <pre> wrapper.
-    pre: ({ children }: { children?: React.ReactNode }) => <>{children}</>
-}
-
-/** Render assistant text as Markdown; user text stays plain. */
-function TurnBody({ turn }: { turn: TurnView }): React.JSX.Element {
-    if (turn.role === 'assistant') {
-        return (
-            <div className="glass-markdown">
-                <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
-                    {turn.text ?? ''}
-                </ReactMarkdown>
-            </div>
-        )
-    }
-    return <>{turn.text}</>
-}
-
-/** A local image or video waiting above the composer until Send. */
-interface StagedAttachment {
-    id: string
-    kind: 'image' | 'video'
-    status: 'processing' | 'ready'
-    captures: TurnCapture[]
-    name: string
-    /** Blob URL used only for the local playable video preview. */
-    previewUrl?: string
-    durationSeconds?: number
-}
-
-/**
- * A macOS-style display name for a freshly captured screenshot, e.g.
- * "Screenshot 9.02.15 PM.png". Screenshots have no real filename, so we mint
- * one from the capture time to show under each carousel card.
- */
-function makeShotName(): string {
-    const time = new Date().toLocaleTimeString(undefined, {
-        hour: 'numeric',
-        minute: '2-digit',
-        second: '2-digit'
-    })
-    return `Screenshot ${time}.png`
-}
-
-/** macOS Finder style middle-truncation, e.g. "Screens…PM.png". */
-function finderName(name = '', startChars = 7, endChars = 6): string {
-    if (name.length <= startChars + endChars + 1) return name
-    return name.slice(0, startChars) + '\u2026' + name.slice(name.length - endChars)
-}
-
-/**
- * Convert a restored operator task (goal + trajectory) into displayable turns so
- * an opened operator session reads like a chat: the goal as a user turn, then
- * each perceive -> reason -> act step as an assistant turn.
- */
-function operatorViewToTurns(view: AgentSessionView): TurnView[] {
-    // Only the goal renders as a chat turn; the steps render in the checklist
-    // (populated separately from the trajectory when the session is opened).
-    const turns: TurnView[] = []
-    if (view.goalText && view.goalText.trim().length > 0) {
-        turns.push({
-            id: `op-goal-${view.id}`,
-            role: 'user',
-            text: view.goalText,
-            createdAt: view.createdAt,
-            status: 'ok'
-        })
-    }
-    return turns
-}
-
-/** The checklist rows for a (restored) operator session's trajectory. */
-function operatorViewToSteps(view: AgentSessionView): Array<{ id: string } & StepItem> {
-    return (view.trajectory ?? []).map((step) => ({
-        id: `op-step-${view.id}-${step.index}`,
-        ...describeStep(step)
-    }))
-}
-
-const NAV_OVERLAY_BREAKPOINT = 720
-const MAX_STAGED_VIDEOS = 2
-
-function compactSidebarText(value: string | undefined, limit = 120): string {
-    const compact = (value ?? '')
-        .replace(/[`*_>#\[\]]/g, '')
-        .replace(/\s+/g, ' ')
-        .trim()
-    return compact.length > limit ? `${compact.slice(0, limit)}…` : compact
-}
-
-function titleFromTurns(turns: TurnView[], fallback: string): string {
-    const firstUser = turns.find(
-        (turn) =>
-            turn.role === 'user' &&
-            typeof turn.text === 'string' &&
-            turn.text.trim().length > 0
-    )?.text
-    const title = compactSidebarText(firstUser ?? fallback, 54)
-    if (title) return title
-    return turns.some((turn) => turn.capture || (turn.captures?.length ?? 0) > 0)
-        ? 'Screen capture chat'
-        : 'Untitled chat'
-}
-
-/** The two remaining voice engines, shown as V1/V2 (v1 tiny-WASM was dropped). */
-const VOICE_VERSIONS: Array<{ value: 2 | 3; label: string; sub: string; title: string }> = [
-    { value: 2, label: 'V1', sub: 'reliable', title: 'Whisper base (WebGPU)' },
-    { value: 3, label: 'V2', sub: 'fast', title: 'Moonshine base (WebGPU)' }
-]
-
-/** Pin glyph for the pin-on-top toggle. */
-function PinIcon(): React.JSX.Element {
-    return (
-        <svg
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-        >
-            <path d="M12 17v5" />
-            <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z" />
-        </svg>
-    )
-}
-
-/** Paperclip glyph for the Add file button. */
-function PaperclipIcon(): React.JSX.Element {
-    return (
-        <svg
-            width="15"
-            height="15"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-        >
-            <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
-        </svg>
-    )
-}
-
-/** Camera glyph for the in-app video recorder. */
-function VideoCameraIcon(): React.JSX.Element {
-    return (
-        <svg
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.9"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-        >
-            <rect x="3" y="6" width="13" height="12" rx="3" />
-            <path d="m16 10 4.2-2.8a.5.5 0 0 1 .8.42v8.76a.5.5 0 0 1-.8.42L16 14" />
-        </svg>
-    )
-}
-
-/** Clean upward send arrow. */
-function SendIcon(): React.JSX.Element {
-    return (
-        <svg
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-        >
-            <path d="M12 19V5" />
-            <path d="M5 12l7-7 7 7" />
-        </svg>
-    )
-}
-
-/** Clean checkmark used for history selection. */
-function CheckIcon(): React.JSX.Element {
-    return (
-        <svg
-            width="12"
-            height="12"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="3"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-        >
-            <path d="M20 6L9 17l-5-5" />
-        </svg>
-    )
-}
-
-/** Right-angle chevron used to collapse/expand the sidebar. */
-function ChevronIcon({ open }: { open: boolean }): React.JSX.Element {
-    return (
-        <svg
-            width="15"
-            height="15"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2.25"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-            style={{ display: 'block', transform: open ? 'none' : 'rotate(180deg)' }}
-        >
-            <path d="M15 6l-6 6 6 6" />
-        </svg>
-    )
-}
-
-/** Small caret used in the model pill to signal the accordion. */
-function CaretIcon({ open }: { open: boolean }): React.JSX.Element {
-    return (
-        <svg
-            width="12"
-            height="12"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2.25"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-            style={{ display: 'block', transform: open ? 'rotate(180deg)' : 'none' }}
-        >
-            <path d="M6 9l6 6 6-6" />
-        </svg>
-    )
-}
-
-/** A filled square "stop" glyph for the Cancel pill. */
-function StopIcon(): React.JSX.Element {
-    return (
-        <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-            <rect x="5" y="5" width="14" height="14" rx="2.5" />
-        </svg>
-    )
-}
-
-/** Friendly display names for the operator's provider ids (for the status pill). */
-const PROVIDER_LABELS: Record<string, string> = {
-    primary: 'Primary',
-    gemini: 'Gemini',
-    openrouter: 'OpenRouter',
-    glm: 'GLM'
-}
-
-/** Map an operator provider id to a short human label; fall back to the id. */
-function friendlyProvider(id: string): string {
-    return PROVIDER_LABELS[id] ?? id
-}
-
-/** One option in a {@link HeaderSelect}. */
-interface HeaderSelectOption {
-    value: string
-    label: string
-}
-
-/**
- * A custom header dropdown styled like the composer's model/voice pills, so the
- * operator's Environment / Autonomy controls match the rest of the UI instead
- * of rendering the native macOS `<select>` popup. Opens downward (it lives in
- * the header) and closes on selection or an outside click.
- */
-function HeaderSelect({
-    value,
-    options,
-    onChange,
-    ariaLabel,
-    title
-}: {
-    value: string
-    options: HeaderSelectOption[]
-    onChange: (value: string) => void
-    ariaLabel: string
-    title: string
-}): React.JSX.Element {
-    const [open, setOpen] = useState(false)
-    const rootRef = useRef<HTMLDivElement | null>(null)
-    const current = options.find((o) => o.value === value)
-
-    useEffect(() => {
-        if (!open) return
-        const onDocPointerDown = (e: MouseEvent): void => {
-            if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
-                setOpen(false)
-            }
-        }
-        document.addEventListener('mousedown', onDocPointerDown)
-        return () => document.removeEventListener('mousedown', onDocPointerDown)
-    }, [open])
-
-    return (
-        <div className="glass-hselect" ref={rootRef}>
-            <button
-                type="button"
-                className="glass-hselect__btn"
-                aria-label={ariaLabel}
-                aria-haspopup="listbox"
-                aria-expanded={open}
-                title={title}
-                onClick={() => setOpen((v) => !v)}
-            >
-                <span className="glass-hselect__label">{current?.label ?? ariaLabel}</span>
-                <CaretIcon open={open} />
-            </button>
-            {open && (
-                <div className="glass-hselect__menu" role="listbox" aria-label={ariaLabel}>
-                    {options.map((o) => (
-                        <button
-                            key={o.value}
-                            type="button"
-                            role="option"
-                            aria-selected={o.value === value}
-                            className={`glass-hselect__item${o.value === value ? ' glass-hselect__item--on' : ''}`}
-                            onClick={() => {
-                                onChange(o.value)
-                                setOpen(false)
-                            }}
-                        >
-                            <span className="glass-hselect__check">
-                                {o.value === value ? <CheckIcon /> : null}
-                            </span>
-                            <span className="glass-hselect__text">{o.label}</span>
-                        </button>
-                    ))}
-                </div>
-            )}
-        </div>
-    )
-}
-
-/** Compact goal/step tracker — surfaces the running session summary. */
-function GoalTracker({ summary }: { summary: SessionSummary }): React.JSX.Element | null {
-    const hasGoal = summary.inferredIntent.trim().length > 0
-    const steps = summary.completedSteps
-    if (!hasGoal && steps.length === 0) {
-        return null
-    }
-    return (
-        <div className="glass-tracker">
-            <div className="glass-tracker__label">Goal</div>
-            <div className="glass-tracker__goal">
-                {hasGoal ? summary.inferredIntent : 'Figuring out your goal…'}
-            </div>
-            {steps.length > 0 && (
-                <ul className="glass-tracker__steps">
-                    {steps.map((step, i) => (
-                        <li key={i} className="glass-tracker__step">
-                            <span className="glass-tracker__check">✓</span>
-                            {step}
-                        </li>
-                    ))}
-                </ul>
-            )}
-        </div>
-    )
-}
 
 export function App(): React.JSX.Element {
     const [state, setState] = useState<ConversationState>(() => initialConversationState())
@@ -476,7 +82,10 @@ export function App(): React.JSX.Element {
     const [codePanelWidth, setCodePanelWidth] = useState(480)
     // Set while the on-device model downloads on first use (one-time), so the
     // wait shows a friendly status instead of looking like a hang.
-    const [downloadStatus, setDownloadStatus] = useState<string | null>(null)
+    // True when a question arrived but NO AI provider is configured; renders
+    // the in-chat key setup card. Cleared on the next submit (main re-emits if
+    // still unconfigured) and by the card itself once a key is saved.
+    const [needsSetup, setNeedsSetup] = useState(false)
     const codePanelApi = useRef({ open: (a: CodeArtifact) => setCodeArtifact(a) }).current
     // Tracks the last copilot answer we auto-opened, so a fresh answer with code
     // opens the panel exactly once (clicking a pill re-opens it thereafter).
@@ -486,10 +95,6 @@ export function App(): React.JSX.Element {
     )
     const [history, setHistory] = useState<SessionListItem[]>([])
     const [menu, setMenu] = useState<{ x: number; y: number; id: string } | null>(null)
-    const [showInstructions, setShowInstructions] = useState(false)
-    // Whether the window is pinned on top (floating-panel behavior). Off by
-    // default so the window behaves like any other and isn't "stubborn".
-    const [pinned, setPinnedState] = useState(false)
     const [summary, setSummary] = useState<SessionSummary | null>(null)
     const [currentModel, setCurrentModel] = useState('')
     const [curated, setCurated] = useState<CuratedModels>({ recommended: [], others: [] })
@@ -501,12 +106,7 @@ export function App(): React.JSX.Element {
     const [operatorMode, setOperatorMode] = useState(false)
     const [opEnvironment, setOpEnvironment] = useState<'browser' | 'container-desktop' | 'local'>('browser')
     const [opAutonomy, setOpAutonomy] = useState<'manual' | 'supervised' | 'autonomous'>('autonomous')
-    // Reusable operator goals: built-in starters plus a small local list of
-    // recently submitted tasks. Selecting a template only fills the composer.
-    const [showTaskTemplates, setShowTaskTemplates] = useState(false)
-    const [recentTaskTemplates, setRecentTaskTemplates] = useState<OperatorTaskTemplate[]>(() =>
-        loadRecentTaskTemplates()
-    )
+
     // Live status pill (operator): the provider actually serving steps right now
     // (updates as the fallback chain shifts) and whether it is acting via the
     // DOM (api) or raw pixels (vision).
@@ -516,6 +116,14 @@ export function App(): React.JSX.Element {
     // selected row in each history rail.
     const [chatSessionId, setChatSessionId] = useState<string | null>(null)
     const [opSessionId, setOpSessionId] = useState<string | null>(null)
+    // True while the user has an unused "New task" draft. Operator sessions
+    // only exist once a goal is submitted, so the draft is renderer state: it
+    // keeps its rail row alive when the user browses older tasks, and is
+    // consumed by the first goal or removed by right-click delete.
+    const [opDraft, setOpDraft] = useState(false)
+    // Saved reusable task templates, shown in the operator's New-task
+    // workspace. Loaded from the main-process store on operator-mode entry.
+    const [playbooks, setPlaybooks] = useState<Playbook[]>([])
     // The operator's live steps for the current run, rendered as a bordered
     // checklist (each with a tick; a spinner trails while the agent works).
     const [opSteps, setOpSteps] = useState<Array<{ id: string } & StepItem>>([])
@@ -528,6 +136,19 @@ export function App(): React.JSX.Element {
     // user can stack several and send them together.
     const [staged, setStaged] = useState<StagedAttachment[]>([])
     const [showVideoRecorder, setShowVideoRecorder] = useState(false)
+    const [showAttachMenu, setShowAttachMenu] = useState(false)
+    // Mail connector: the Apple Mail message staged for the next chat message.
+    const [stagedEmail, setStagedEmail] = useState<SelectedEmail | null>(null)
+    const [mailBusy, setMailBusy] = useState(false)
+    // User-turn ids whose questions are still processing. Several can be in
+    // flight at once — a new question never supersedes an earlier one — and
+    // each row offers Cancel for exactly that question.
+    const [thinkingIds, setThinkingIds] = useState<readonly string[]>([])
+    const cancelThinking = useCallback((requestId: string) => {
+        // Optimistically clear the row; main confirms via request:settled.
+        setThinkingIds((prev) => prev.filter((id) => id !== requestId))
+        void getChatBridge()?.cancelRequest?.(requestId)?.catch(() => undefined)
+    }, [])
     // Operator mode keeps its OWN conversation + history, separate from copilot.
     // Toggling modes swaps the visible chat (copilot chat is hidden, not lost),
     // so each mode reads like its own workspace.
@@ -561,26 +182,15 @@ export function App(): React.JSX.Element {
         stagedRef.current = []
     }, [])
 
-    // Live A/B switch between the three frozen voice engines. All three hooks
-    // are mounted unconditionally (they stay idle until start() is called and
-    // load their worker lazily on first transcribe), so switching is instant
-    // and can't regress any baseline. v1 = Whisper tiny (WASM), v2 = Whisper
-    // base (WebGPU), v3 = Moonshine base (WebGPU, current default).
-    const [voiceVer, setVoiceVer] = useState<2 | 3>(3)
-    // The voice-engine picker is a collapsible pill: a mic icon that expands to
-    // show the engine versions and collapses again once one is chosen.
-    const [voiceOpen, setVoiceOpen] = useState(false)
+    // Single dictation engine: Whisper base (WebGPU). The faster Moonshine
+    // variant was dropped — it hallucinated too often to trust.
     const voiceOpts = {
         getText: () => draftRef.current,
         setText: setDraft,
         onError: (message: string) =>
             setState((s) => setError(s, { kind: 'render-failed', message: `Voice: ${message}`, recoverable: true }))
     }
-    // v1 (Whisper tiny WASM) was dropped; only the two WebGPU engines remain,
-    // shown to the user as V1 (Whisper base) and V2 (Moonshine, default).
-    const d2 = useDictationV2(voiceOpts)
-    const d3 = useDictationV3(voiceOpts)
-    const dictation = voiceVer === 2 ? d2 : d3
+    const dictation = useDictation(voiceOpts)
 
     // v1's Dictation has no cancel(); fall back to stop() + clear for it.
     const cancelActive = useCallback(() => {
@@ -645,23 +255,17 @@ export function App(): React.JSX.Element {
                     }
                 ])
             ),
-            // Gateway is down -> answer with the on-device SmolVLM fallback and
-            // report the result back so main appends it + clears pending.
-            bridge.onGatewayFallback?.((ctx, originId) => {
-                const { images, prompt } = buildFallbackRequest(ctx)
-                runLocalFallback(images, prompt, (p) => {
-                    // Show the one-time download status while a model file streams in.
-                    const done = p.status === 'ready' || p.status === 'done'
-                    const downloading =
-                        !done && (p.progress === undefined || p.progress < 100) && Boolean(p.file || p.status)
-                    if (downloading) {
-                        setDownloadStatus('Setting up the on-device model… (one-time download)')
-                    }
-                })
-                    .then((text) => bridge.submitFallbackResult?.(text || null, originId))
-                    .catch(() => bridge.submitFallbackResult?.(null, originId))
-                    .finally(() => setDownloadStatus(null))
-            }),
+            // No provider configured at all: show the in-chat key setup card so
+            // the user can paste a free key without hunting through Settings.
+            bridge.onSetupNeeded?.(() => setNeedsSetup(true)),
+            // Per-question thinking state: each in-flight question shows its own
+            // indicator (+ Cancel) under the exact message that asked it.
+            bridge.onRequestStarted?.((requestId) =>
+                setThinkingIds((prev) => (prev.includes(requestId) ? prev : [...prev, requestId]))
+            ),
+            bridge.onRequestSettled?.((requestId) =>
+                setThinkingIds((prev) => prev.filter((id) => id !== requestId))
+            ),
             // Do NOT auto-open Settings on launch when credentials are missing;
             // the user opens Settings themselves. A missing-key error still
             // surfaces inline if they try to send without configuring.
@@ -845,6 +449,33 @@ export function App(): React.JSX.Element {
     const selectModel = useCallback((m: string) => {
         setCurrentModel(m)
         setShowModels(false)
+        // Operator mode: the agent reads its model from the OPERATOR provider
+        // chain (operator-config.json), NOT the chat gateway config. Route the
+        // pick to the provider that serves it and persist there — previously
+        // the pick only wrote the chat config, so the agent silently kept
+        // running its old model.
+        if (operatorMode) {
+            const op = getOperatorBridge()
+            if (op && typeof op.getProviders === 'function' && typeof op.saveProviders === 'function') {
+                void op
+                    .getProviders()
+                    .then((view) => {
+                        const targetId = m.startsWith('openrouter')
+                            ? 'openrouter'
+                            : m.startsWith('gemini')
+                                ? 'gemini'
+                                : view.chain.providerIds[0] ?? null
+                        if (!targetId || !view.providers.some((p) => p.id === targetId)) return
+                        // Omitted apiKey keeps each provider's stored key.
+                        const providers = view.providers.map((p) =>
+                            p.id === targetId ? { ...p, model: m } : p
+                        )
+                        return op.saveProviders?.({ chain: view.chain, providers })
+                    })
+                    .catch(() => undefined)
+            }
+            return
+        }
         const cb = getConfigBridge()
         if (cb) {
             // Persist via saveConfig; empty apiKey keeps the stored key.
@@ -852,24 +483,26 @@ export function App(): React.JSX.Element {
                 .saveConfig({ baseURL: baseURLRef.current, model: m, apiKey: '' })
                 .catch(() => undefined)
         }
-    }, [])
-
-    const applyTaskTemplate = useCallback((template: OperatorTaskTemplate) => {
-        setDraft(template.goal)
-        setOpEnvironment(template.environment)
-        setShowTaskTemplates(false)
-        requestAnimationFrame(() => inputRef.current?.focus())
-    }, [])
+    }, [operatorMode])
 
     // Start an operator task for `goal` in the given environment: record it in
     // the operator conversation and kick off the engine. Shared by the explicit
     // operator path and the auto-router (a copilot command routed to operator).
     const runOperatorGoal = useCallback(
-        (goal: string, environment: 'browser' | 'container-desktop' | 'local') => {
+        (
+            goal: string,
+            environment: 'browser' | 'container-desktop' | 'local',
+            // Playbooks run with THEIR saved settings; the header pickers may
+            // not have re-rendered yet when a run starts, so explicit
+            // overrides beat possibly-stale state.
+            overrides?: { autonomy?: 'manual' | 'supervised' | 'autonomous'; stepBudget?: number }
+        ) => {
             setOpSessionId(null)
+            // A submitted goal consumes the "New task" draft: the real task
+            // takes over its place in the rail.
+            setOpDraft(false)
             setOpState((s) => addUserMessage(s, goal).state)
             setOpSteps([]) // fresh checklist for the new run
-            setShowTaskTemplates(false)
             const op = getOperatorBridge()
             if (!op || typeof op.startGoal !== 'function') {
                 setOpState((s) =>
@@ -885,8 +518,9 @@ export function App(): React.JSX.Element {
             void op
                 .startGoal({
                     goal,
-                    autonomy: opAutonomy,
-                    stepBudget: Math.max(1, Number.parseInt(opStepBudget, 10) || 25),
+                    autonomy: overrides?.autonomy ?? opAutonomy,
+                    stepBudget:
+                        overrides?.stepBudget ?? Math.max(1, Number.parseInt(opStepBudget, 10) || 25),
                     environment
                 })
                 .then((result) => {
@@ -898,7 +532,6 @@ export function App(): React.JSX.Element {
                         return
                     }
                     setOpSessionId(result.sessionId)
-                    setRecentTaskTemplates(rememberRecentTaskTemplate(goal, environment))
                 })
                 .catch((err: unknown) => {
                     setOpState((s) => setPending(s, false))
@@ -909,7 +542,105 @@ export function App(): React.JSX.Element {
         [opAutonomy, opStepBudget]
     )
 
+    // ---- Playbooks: list / run / save / delete --------------------------
+    const refreshPlaybooks = useCallback(() => {
+        const op = getOperatorBridge()
+        if (op && typeof op.listPlaybooks === 'function') {
+            void op.listPlaybooks().then(setPlaybooks).catch(() => undefined)
+        }
+    }, [])
+    useEffect(() => {
+        if (operatorMode) refreshPlaybooks()
+    }, [operatorMode, refreshPlaybooks])
+    const runPlaybook = useCallback(
+        (pb: Playbook) => {
+            // Reflect the playbook's saved settings in the header pickers and
+            // run with explicit overrides (state updates land next render).
+            setOpAutonomy(pb.autonomy)
+            setOpStepBudget(String(pb.stepBudget))
+            setOpEnvironment(pb.environment)
+            runOperatorGoal(pb.goal, pb.environment, {
+                autonomy: pb.autonomy,
+                stepBudget: pb.stepBudget
+            })
+        },
+        [runOperatorGoal]
+    )
+    const saveDraftAsPlaybook = useCallback(() => {
+        const goal = draft.trim()
+        if (goal.length === 0) return
+        const op = getOperatorBridge()
+        if (!op || typeof op.savePlaybook !== 'function') return
+        const firstLine = goal.split('\n', 1)[0] ?? goal
+        const name = firstLine.length > 48 ? `${firstLine.slice(0, 48)}…` : firstLine
+        void op
+            .savePlaybook({
+                name,
+                goal,
+                autonomy: opAutonomy,
+                stepBudget: Math.max(1, Number.parseInt(opStepBudget, 10) || 25),
+                environment: opEnvironment
+            })
+            .then(setPlaybooks)
+            .catch(() => undefined)
+    }, [draft, opAutonomy, opStepBudget, opEnvironment])
+    const deletePlaybook = useCallback((id: string) => {
+        const op = getOperatorBridge()
+        if (!op || typeof op.deletePlaybooks !== 'function') return
+        void op.deletePlaybooks([id]).then(setPlaybooks).catch(() => undefined)
+    }, [])
+    // Set / clear a playbook's daily schedule (null clears). Runs happen while
+    // the app is open; a missed time catches up on next launch that day.
+    const updatePlaybookSchedule = useCallback(
+        (pb: Playbook, schedule: { timeOfDay: string; enabled: boolean } | null) => {
+            const op = getOperatorBridge()
+            if (!op || typeof op.savePlaybook !== 'function') return
+            void op
+                .savePlaybook({
+                    id: pb.id,
+                    name: pb.name,
+                    goal: pb.goal,
+                    autonomy: pb.autonomy,
+                    stepBudget: pb.stepBudget,
+                    environment: pb.environment,
+                    schedule
+                })
+                .then(setPlaybooks)
+                .catch(() => undefined)
+        },
+        []
+    )
+
+    // Mail connector: fetch the currently selected Mail message and stage it
+    // as context for the next chat message. First use triggers the macOS
+    // Automation permission prompt ("wants to control Mail").
+    const attachSelectedEmail = useCallback((source: 'mail' | 'outlook' = 'mail') => {
+        const bridge = getChatBridge()
+        if (!bridge || typeof bridge.readSelectedMail !== 'function' || mailBusy) return
+        setMailBusy(true)
+        void bridge
+            .readSelectedMail(source)
+            .then((result) => {
+                if (result.ok) {
+                    setStagedEmail(result.email)
+                    return
+                }
+                setState((s) =>
+                    setError(s, { kind: 'render-failed', message: result.error, recoverable: true })
+                )
+            })
+            .catch((err: unknown) => {
+                const message =
+                    err instanceof Error ? err.message : 'Could not read the selected email.'
+                setState((s) => setError(s, { kind: 'render-failed', message, recoverable: true }))
+            })
+            .finally(() => setMailBusy(false))
+    }, [mailBusy])
+
     const submit = useCallback(() => {
+        // A fresh ask retracts the setup card; main re-emits it if keys are
+        // still missing, and after a successful connect it stays gone.
+        setNeedsSetup(false)
         const isPreparingAttachment = staged.some((attachment) => attachment.status === 'processing')
         if (isPreparingAttachment) {
             setState((current) =>
@@ -924,12 +655,17 @@ export function App(): React.JSX.Element {
 
         const captures = staged.flatMap((attachment) => attachment.captures)
         const hasCaptures = captures.length > 0
+        // A staged email counts as content in copilot mode (like attachments).
+        const emailStaged = !operatorMode && stagedEmail !== null
         // Images, PDFs, and sampled videos can be sent without typed text.
-        if (!isSubmittable(draft) && !hasCaptures) {
+        if (!isSubmittable(draft) && !hasCaptures && !emailStaged) {
             return
         }
-        const text = draft
+        // Fold a staged Mail message into the outgoing text so the model gets
+        // the exact email (sender/subject/body) alongside the user's ask.
+        const text = emailStaged && stagedEmail ? formatEmailContext(stagedEmail, draft) : draft
         setDraft('')
+        if (emailStaged) setStagedEmail(null)
 
         // Sending ends the utterance: turn the mic off so it isn't left
         // listening after the message goes out. Cancel (rather than stop) so no
@@ -996,7 +732,7 @@ export function App(): React.JSX.Element {
             const message = err instanceof Error ? err.message : 'Failed to send your message.'
             setState((s) => setError(s, { kind: 'render-failed', message, recoverable: true }))
         })
-    }, [draft, staged, operatorMode, opEnvironment, runOperatorGoal, dictation, cancelActive])
+    }, [draft, staged, stagedEmail, operatorMode, opEnvironment, runOperatorGoal, dictation, cancelActive])
 
     /** Remove one local attachment before sending. */
     const removeStaged = useCallback((id: string) => {
@@ -1245,9 +981,10 @@ export function App(): React.JSX.Element {
     }, [])
 
     const onNewSession = useCallback(() => {
-        // A fresh session closes the right-hand code panel and template picker.
+        // Leave an open Settings panel so the fresh chat is actually visible,
+        // and close the right-hand code panel.
+        setShowSettings(false)
         setCodeArtifact(null)
-        setShowTaskTemplates(false)
         lastAutoOpenedTurnRef.current = null
         // Operator mode: clear the operator workspace (hide, not delete) and stop
         // any running task so the next goal starts fresh.
@@ -1261,6 +998,11 @@ export function App(): React.JSX.Element {
             setOpActiveMode(null)
             setOpSessionId(null)
             setOpSteps([])
+            // Mark the draft so its rail row survives browsing older tasks
+            // until a goal consumes it or the user deletes it. Clicking New
+            // task again while the draft exists just returns to this same
+            // draft — no second one is ever created.
+            setOpDraft(true)
             refreshOpHistory()
             if (window.innerWidth <= NAV_OVERLAY_BREAKPOINT) setNavOpen(false)
             return
@@ -1280,10 +1022,15 @@ export function App(): React.JSX.Element {
 
     const onOpenSession = useCallback(
         (id: string) => {
-            // Opening a chat must leave any open panel (Settings / Instructions),
-            // otherwise the selected conversation stays hidden behind it.
+            // Clicking the parked draft returns to the New task workspace
+            // (same clearing flow as the New chat button — still one draft).
+            if (id === OPERATOR_DRAFT_ID) {
+                if (opSessionId !== null) onNewSession()
+                return
+            }
+            // Opening a chat must leave an open Settings panel, otherwise the
+            // selected conversation stays hidden behind it.
             setShowSettings(false)
-            setShowInstructions(false)
             // Keep the sidebar open on wide layouts (it's a persistent pane); only
             // auto-close on the narrow/mobile overlay where it covers the chat.
             if (window.innerWidth <= NAV_OVERLAY_BREAKPOINT) setNavOpen(false)
@@ -1314,39 +1061,36 @@ export function App(): React.JSX.Element {
                 void bridge.openSession(id).then(() => refreshHistory()).catch(() => undefined)
             }
         },
-        [operatorMode, opSessionId, chatSessionId, refreshHistory]
+        [operatorMode, opSessionId, chatSessionId, refreshHistory, onNewSession]
     )
 
     const toggleSettings = useCallback(() => {
         setShowSettings((v) => !v)
-        setShowInstructions(false)
         // Settings lives in the rail footer; close the narrow overlay so the
         // panel it opens is immediately visible rather than hidden underneath.
         if (window.innerWidth <= NAV_OVERLAY_BREAKPOINT) setNavOpen(false)
     }, [])
 
-    const toggleInstructions = useCallback(() => {
-        setShowInstructions((v) => !v)
-        setShowSettings(false)
-    }, [])
-
-    const togglePin = useCallback(() => {
-        setPinnedState((prev) => {
-            const next = !prev
-            const bridge = getChatBridge()
-            void (bridge as { setPinned?: (f: boolean) => Promise<void> })?.setPinned?.(next)
-            return next
-        })
-    }, [])
-
-    const onChatContextMenu = useCallback((e: React.MouseEvent, id: string) => {
-        e.preventDefault()
-        setMenu({ x: e.clientX, y: e.clientY, id })
-    }, [])
+    const onChatContextMenu = useCallback(
+        (e: React.MouseEvent, id: string) => {
+            e.preventDefault()
+            // The ACTIVE draft pill is just the empty workspace — nothing to
+            // delete. A PARKED draft row is deletable like any other row.
+            if (id === OPERATOR_DRAFT_ID && opSessionId === null) return
+            setMenu({ x: e.clientX, y: e.clientY, id })
+        },
+        [opSessionId]
+    )
 
     const deleteOne = useCallback(
         (id: string) => {
             setMenu(null)
+            // The operator draft is renderer state, not a stored session:
+            // deleting it just removes its row.
+            if (id === OPERATOR_DRAFT_ID) {
+                setOpDraft(false)
+                return
+            }
             // Delete from whichever store owns the active mode: operator tasks go
             // through the operator bridge, copilot chats through the chat bridge.
             const deletingOpen = id === (operatorMode ? opSessionId : chatSessionId)
@@ -1356,7 +1100,6 @@ export function App(): React.JSX.Element {
                 void op
                     .deleteSessions([id])
                     .then(async () => {
-                        setRecentTaskTemplates(clearRecentTaskTemplates())
                         if (deletingOpen) {
                             setOpState(initialConversationState([]))
                             setOpActiveProvider(null)
@@ -1436,32 +1179,74 @@ export function App(): React.JSX.Element {
             : 'Thinking through your request…'
         : ''
     const hasCurrentContent = conv.turns.length > 0 || conv.pending || (operatorMode && opSteps.length > 0)
-    const currentItem: SessionListItem | null =
-        activeSessionId && hasCurrentContent
-            ? {
-                id: activeSessionId,
-                title: titleFromTurns(
+    // The active chat is ALWAYS present in the rail: clicking New chat shows a
+    // "New chat" pill immediately, which renames itself from the conversation
+    // as soon as the first message lands (titleFromTurns).
+    const currentItem: SessionListItem | null = activeSessionId
+        ? {
+            id: activeSessionId,
+            title: hasCurrentContent
+                ? titleFromTurns(
                     conv.turns,
                     operatorMode ? 'Untitled task' : summary?.inferredIntent ?? 'Untitled chat'
-                ),
-                description: currentDescription,
-                updatedAt:
-                    latestTurn?.createdAt ??
-                    archivedHistory.find((item) => item.id === activeSessionId)?.updatedAt ??
-                    new Date().toISOString(),
-                turnCount: conv.turns.length
+                )
+                : operatorMode
+                    ? 'New task'
+                    : 'New chat',
+            description: currentDescription,
+            updatedAt:
+                latestTurn?.createdAt ??
+                archivedHistory.find((item) => item.id === activeSessionId)?.updatedAt ??
+                new Date().toISOString(),
+            turnCount: conv.turns.length
+        }
+        : operatorMode
+            ? {
+                // Operator draft state: tasks only exist once a goal is
+                // submitted, so after "New task" there is no session id yet.
+                // A navigation-inert pill keeps the rail's promise that the
+                // active view is always visible (parity with chat).
+                id: OPERATOR_DRAFT_ID,
+                title: 'New task',
+                description: '',
+                updatedAt: new Date().toISOString(),
+                turnCount: 0
             }
             : null
-    const shownHistory = currentItem
-        ? [currentItem, ...archivedHistory.filter((item) => item.id !== currentItem.id)]
-        : archivedHistory
+    // Strictly newest-first by last activity: opening an old chat does NOT
+    // bump it to the top — only actually talking in it does (its latest turn
+    // becomes its updatedAt, which floats it up with a fresh "now" stamp).
+    const byNewest = (a: SessionListItem, b: SessionListItem): number =>
+        (new Date(b.updatedAt).getTime() || 0) - (new Date(a.updatedAt).getTime() || 0)
+    // The parked operator draft: the user clicked New task, then went browsing
+    // older tasks. Its row stays in the rail (deletable, reopenable) until a
+    // goal consumes it — parity with parked empty chats in copilot mode.
+    const parkedDraft: SessionListItem | null =
+        operatorMode && opDraft && opSessionId !== null
+            ? {
+                id: OPERATOR_DRAFT_ID,
+                title: 'New task',
+                description: '',
+                updatedAt: new Date().toISOString(),
+                turnCount: 0
+            }
+            : null
+    const shownHistory = (
+        currentItem
+            ? [
+                currentItem,
+                ...(parkedDraft ? [parkedDraft] : []),
+                ...archivedHistory.filter((item) => item.id !== currentItem.id)
+            ]
+            : [...archivedHistory]
+    ).sort(byNewest)
 
     return (
         <CodePanelContext.Provider value={codePanelApi}>
             <div className={`glass-app${navOpen ? '' : ' glass-app--navhidden'}${codeArtifact ? ' glass-app--codeopen' : ''}`}>
                 <ChatSidebar
                     items={shownHistory}
-                    activeId={activeSessionId}
+                    activeId={currentItem?.id ?? null}
                     running={conv.pending}
                     operatorMode={operatorMode}
                     settingsOpen={showSettings}
@@ -1544,30 +1329,6 @@ export function App(): React.JSX.Element {
                                     />
                                 </>
                             )}
-                            <button
-                                type="button"
-                                className={`glass-iconbtn glass-iconbtn--icon${pinned ? ' glass-iconbtn--on' : ''}`}
-                                onClick={togglePin}
-                                aria-pressed={pinned}
-                                aria-label={pinned ? 'Window stays on top: on' : 'Window stays on top: off'}
-                                title={
-                                    pinned
-                                        ? 'Keep window on top: ON (click to let it go behind others)'
-                                        : 'Keep window on top: OFF (click to float above all windows)'
-                                }
-                            >
-                                <PinIcon />
-                            </button>
-                            {!operatorMode && (
-                                <button
-                                    type="button"
-                                    className="glass-iconbtn"
-                                    onClick={toggleInstructions}
-                                    title="Custom instructions the copilot follows every reply"
-                                >
-                                    Instructions
-                                </button>
-                            )}
                         </div>
                     </header>
 
@@ -1577,67 +1338,152 @@ export function App(): React.JSX.Element {
                                 <Settings />
                             </div>
                         </div>
-                    ) : showInstructions ? (
-                        <div className="glass-panel">
-                            <div className="glass-history__bar">
-                                <span className="glass-history__title">How to use Smart Copilot</span>
-                                <button
-                                    type="button"
-                                    className="glass-iconbtn"
-                                    onClick={() => setShowInstructions(false)}
-                                >
-                                    Close
-                                </button>
-                            </div>
-                            <div className="glass-settings__scroll">
-                                <ol className="glass-onboard">
-                                    <li>Open Settings and add your gateway (URL, model, key), or a free key.</li>
-                                    <li>Take a screenshot with macOS (⌘⇧4 region, ⌘⇧3 full, or ⌘⇧5) to the clipboard, then paste it here with ⌘V. You can also drag an image in or use the paperclip.</li>
-                                    <li>Ask about it, or just type a question. Smart Copilot remembers the whole conversation, so you never explain yourself twice.</li>
-                                    <li>Type a command like "open youtube and play a song" and it switches to Computer or Browser Use to do it for you.</li>
-                                </ol>
-                            </div>
-                        </div>
                     ) : (
                         <div className="glass-conversation" ref={conversationRef} aria-live="polite">
                             {!operatorMode && summary && <GoalTracker summary={summary} />}
-
-                            {conv.turns.map((turn) => (
-                                <div
-                                    key={turn.id}
-                                    className={[
-                                        'glass-row',
-                                        turn.role === 'user' ? 'glass-row--user' : 'glass-row--assistant',
-                                        turn.status === 'error' ? 'glass-row--error' : ''
-                                    ]
-                                        .filter(Boolean)
-                                        .join(' ')}
-                                >
-                                    <div className="glass-bubble">
-                                        {turn.captures && turn.captures.length > 0 && (
-                                            <div className="glass-shots">
-                                                {turn.captures.map((cap, ci) => (
-                                                    <img
-                                                        key={ci}
-                                                        className="glass-thumb"
-                                                        src={cap.thumbnailUrl}
-                                                        alt={cap.videoFrame
-                                                            ? `Video frame ${cap.videoFrame.index} of ${cap.videoFrame.count}`
-                                                            : `Captured screen region ${ci + 1}`}
+                            {operatorMode &&
+                                conv.turns.length === 0 &&
+                                opSteps.length === 0 &&
+                                (playbooks.length > 0 || draft.trim().length > 0) && (
+                                    <div className="glass-playbooks">
+                                        <div className="glass-playbooks__head">
+                                            <span className="glass-playbooks__title">Playbooks</span>
+                                            {draft.trim().length > 0 && (
+                                                <button
+                                                    type="button"
+                                                    className="glass-playbooks__save"
+                                                    onClick={saveDraftAsPlaybook}
+                                                    title="Save the task in the composer as a reusable playbook"
+                                                >
+                                                    Save current task
+                                                </button>
+                                            )}
+                                        </div>
+                                        {playbooks.map((pb) => (
+                                            <div key={pb.id} className="glass-playbook">
+                                                <button
+                                                    type="button"
+                                                    className="glass-playbook__run"
+                                                    onClick={() => runPlaybook(pb)}
+                                                    title={`Run: ${pb.goal}`}
+                                                >
+                                                    <span className="glass-playbook__name">{pb.name}</span>
+                                                    <span className="glass-playbook__goal">{pb.goal}</span>
+                                                </button>
+                                                <div className="glass-playbook__schedule">
+                                                    <input
+                                                        type="time"
+                                                        className="glass-playbook__time"
+                                                        value={pb.schedule?.timeOfDay ?? ''}
+                                                        onChange={(e) => {
+                                                            const time = e.target.value
+                                                            updatePlaybookSchedule(
+                                                                pb,
+                                                                time ? { timeOfDay: time, enabled: true } : null
+                                                            )
+                                                        }}
+                                                        aria-label={`Daily run time for ${pb.name}`}
+                                                        title="Run daily at this time (while the app is open)"
                                                     />
-                                                ))}
+                                                    <button
+                                                        type="button"
+                                                        className={`glass-playbook__toggle${pb.schedule?.enabled ? ' glass-playbook__toggle--on' : ''}`}
+                                                        onClick={() =>
+                                                            updatePlaybookSchedule(
+                                                                pb,
+                                                                pb.schedule
+                                                                    ? {
+                                                                        timeOfDay: pb.schedule.timeOfDay,
+                                                                        enabled: !pb.schedule.enabled
+                                                                    }
+                                                                    : { timeOfDay: '09:00', enabled: true }
+                                                            )
+                                                        }
+                                                        aria-label={`${pb.schedule?.enabled ? 'Disable' : 'Enable'} daily schedule for ${pb.name}`}
+                                                        title={
+                                                            pb.schedule?.enabled
+                                                                ? 'Scheduled daily; click to turn off'
+                                                                : 'Click to run daily'
+                                                        }
+                                                    >
+                                                        {pb.schedule?.enabled ? 'Daily' : 'Off'}
+                                                    </button>
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    className="glass-playbook__delete"
+                                                    onClick={() => deletePlaybook(pb.id)}
+                                                    aria-label={`Delete playbook ${pb.name}`}
+                                                    title="Delete playbook"
+                                                >
+                                                    ×
+                                                </button>
+                                            </div>
+                                        ))}
+                                        {playbooks.length === 0 && (
+                                            <div className="glass-playbooks__empty">
+                                                Save repeat tasks once, run them with one click.
                                             </div>
                                         )}
-                                        {turn.capture?.thumbnailUrl && (
-                                            <img
-                                                className="glass-thumb"
-                                                src={turn.capture.thumbnailUrl}
-                                                alt="Captured screen region"
-                                            />
-                                        )}
-                                        {turn.text && <TurnBody turn={turn} />}
                                     </div>
-                                </div>
+                                )}
+
+                            {conv.turns.map((turn) => (
+                                <React.Fragment key={turn.id}>
+                                    <div
+                                        className={[
+                                            'glass-row',
+                                            turn.role === 'user' ? 'glass-row--user' : 'glass-row--assistant',
+                                            turn.status === 'error' ? 'glass-row--error' : ''
+                                        ]
+                                            .filter(Boolean)
+                                            .join(' ')}
+                                    >
+                                        <div className="glass-bubble">
+                                            {turn.captures && turn.captures.length > 0 && (
+                                                <div className="glass-shots">
+                                                    {turn.captures.map((cap, ci) => (
+                                                        <img
+                                                            key={ci}
+                                                            className="glass-thumb"
+                                                            src={cap.thumbnailUrl}
+                                                            alt={cap.videoFrame
+                                                                ? `Video frame ${cap.videoFrame.index} of ${cap.videoFrame.count}`
+                                                                : `Captured screen region ${ci + 1}`}
+                                                        />
+                                                    ))}
+                                                </div>
+                                            )}
+                                            {turn.capture?.thumbnailUrl && (
+                                                <img
+                                                    className="glass-thumb"
+                                                    src={turn.capture.thumbnailUrl}
+                                                    alt="Captured screen region"
+                                                />
+                                            )}
+                                            {turn.text && <TurnBody turn={turn} />}
+                                        </div>
+                                    </div>
+                                    {/* This question is still thinking: its own
+                                    indicator + a Cancel for exactly this one. */}
+                                    {!operatorMode && turn.role === 'user' && thinkingIds.includes(turn.id) && (
+                                        <div className="glass-row glass-row--assistant">
+                                            <div className="glass-pending glass-pending--perquestion" role="status" aria-label="Thinking about this question">
+                                                <span className="glass-pending__dot" />
+                                                <span className="glass-pending__dot" />
+                                                <span className="glass-pending__dot" />
+                                                <button
+                                                    type="button"
+                                                    className="glass-pending__cancel"
+                                                    onClick={() => cancelThinking(turn.id)}
+                                                    title="Stop thinking about this question"
+                                                >
+                                                    Cancel
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
+                                </React.Fragment>
                             ))}
 
                             {/* Operator steps: a bordered checklist (tick per done
@@ -1678,17 +1524,25 @@ export function App(): React.JSX.Element {
                                 </div>
                             )}
 
-                            {/* Copilot uses the classic three-dot thinking row. */}
-                            {conv.pending && !operatorMode && (
-                                <div className="glass-row glass-row--assistant">
-                                    <div className="glass-pending" role="status" aria-label="Glass is thinking">
-                                        <span className="glass-pending__dot" />
-                                        <span className="glass-pending__dot" />
-                                        <span className="glass-pending__dot" />
-                                        {downloadStatus && (
-                                            <span className="glass-pending__label">{downloadStatus}</span>
-                                        )}
+                            {/* Classic bottom thinking row: only when no per-question
+                            row is already visible. */}
+                            {conv.pending &&
+                                !operatorMode &&
+                                !conv.turns.some(
+                                    (t) => t.role === 'user' && thinkingIds.includes(t.id)
+                                ) && (
+                                    <div className="glass-row glass-row--assistant">
+                                        <div className="glass-pending" role="status" aria-label="Glass is thinking">
+                                            <span className="glass-pending__dot" />
+                                            <span className="glass-pending__dot" />
+                                            <span className="glass-pending__dot" />
+                                        </div>
                                     </div>
+                                )}
+                            {/* No provider configured: paste a free key right here. */}
+                            {!operatorMode && needsSetup && (
+                                <div className="glass-row glass-row--assistant">
+                                    <SetupCard onOpenSettings={toggleSettings} />
                                 </div>
                             )}
 
@@ -1738,7 +1592,7 @@ export function App(): React.JSX.Element {
                         </div>
                     )}
 
-                    {!showSettings && !showInstructions && staged.length > 0 && (
+                    {!showSettings && staged.length > 0 && (
                         <div className="glass-carousel" aria-label="Staged attachments">
                             {staged.map((attachment) => {
                                 const thumbnail = attachment.captures[0]?.thumbnailUrl
@@ -1783,7 +1637,27 @@ export function App(): React.JSX.Element {
                         </div>
                     )}
 
-                    {!showSettings && !showInstructions && (
+                    {!showSettings && stagedEmail && !operatorMode && (
+                        <div className="glass-mailchip" role="status">
+                            <span className="glass-mailchip__icon" aria-hidden="true">
+                                <MailIcon />
+                            </span>
+                            <span className="glass-mailchip__text">
+                                <span className="glass-mailchip__subject">{stagedEmail.subject}</span>
+                                <span className="glass-mailchip__sender">{stagedEmail.sender}</span>
+                            </span>
+                            <button
+                                type="button"
+                                className="glass-mailchip__remove"
+                                onClick={() => setStagedEmail(null)}
+                                aria-label="Remove attached email"
+                                title="Remove attached email"
+                            >
+                                ×
+                            </button>
+                        </div>
+                    )}
+                    {!showSettings && (
                         <div className="glass-composer">
                             <div className="glass-composer__top">
                                 <div className="glass-composer__text">
@@ -1835,90 +1709,95 @@ export function App(): React.JSX.Element {
                             </div>
                             <div className="glass-composer__bar">
                                 <div className="glass-composer__left">
-                                    {operatorMode && (
-                                        <div className="glass-template-wrap">
-                                            {showTaskTemplates && (
-                                                <>
-                                                    <div
-                                                        className="glass-model-backdrop"
-                                                        onClick={() => setShowTaskTemplates(false)}
-                                                    />
-                                                    <div className="glass-template-menu" role="menu" aria-label="Task templates">
-                                                        <div className="glass-template-section">Starters</div>
-                                                        {BUILT_IN_TASK_TEMPLATES.map((template) => (
+                                    <div className="glass-attach-wrap">
+                                        {showAttachMenu && (
+                                            <>
+                                                <div
+                                                    className="glass-model-backdrop"
+                                                    onClick={() => setShowAttachMenu(false)}
+                                                />
+                                                <div className="glass-model-menu glass-attach-menu" role="menu">
+                                                    <button
+                                                        type="button"
+                                                        className="glass-model-item"
+                                                        role="menuitem"
+                                                        onClick={() => {
+                                                            setShowAttachMenu(false)
+                                                            setShowVideoRecorder(true)
+                                                        }}
+                                                    >
+                                                        <span className="glass-model-item__check"><VideoCameraIcon /></span>
+                                                        <span className="glass-model-item__text">
+                                                            <span className="glass-model-item__name">Camera</span>
+                                                            <span className="glass-model-item__sub">Record a video with this device</span>
+                                                        </span>
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        className="glass-model-item"
+                                                        role="menuitem"
+                                                        onClick={() => {
+                                                            setShowAttachMenu(false)
+                                                            addFileRef.current?.click()
+                                                        }}
+                                                    >
+                                                        <span className="glass-model-item__check"><ImageFileIcon /></span>
+                                                        <span className="glass-model-item__text">
+                                                            <span className="glass-model-item__name">Files</span>
+                                                            <span className="glass-model-item__sub">Images, PDFs, or videos</span>
+                                                        </span>
+                                                    </button>
+                                                    {!operatorMode && (
+                                                        <>
                                                             <button
-                                                                key={template.id}
                                                                 type="button"
-                                                                className="glass-template-item"
-                                                                onClick={() => applyTaskTemplate(template)}
+                                                                className="glass-model-item"
+                                                                role="menuitem"
+                                                                disabled={mailBusy}
+                                                                onClick={() => {
+                                                                    setShowAttachMenu(false)
+                                                                    attachSelectedEmail('mail')
+                                                                }}
                                                             >
-                                                                <span className="glass-template-item__label">{template.label}</span>
-                                                                <span className="glass-template-item__description">
-                                                                    {template.description}
+                                                                <span className="glass-model-item__check"><MailIcon /></span>
+                                                                <span className="glass-model-item__text">
+                                                                    <span className="glass-model-item__name">Email — Apple Mail</span>
+                                                                    <span className="glass-model-item__sub">The message selected in Mail</span>
                                                                 </span>
                                                             </button>
-                                                        ))}
-                                                        {recentTaskTemplates.length > 0 && (
-                                                            <>
-                                                                <div className="glass-template-section glass-template-section--recent">
-                                                                    Recent
-                                                                </div>
-                                                                {recentTaskTemplates.map((template) => (
-                                                                    <button
-                                                                        key={template.id}
-                                                                        type="button"
-                                                                        className="glass-template-item"
-                                                                        onClick={() => applyTaskTemplate(template)}
-                                                                        title={template.goal}
-                                                                    >
-                                                                        <span className="glass-template-item__label">
-                                                                            {template.label}
-                                                                        </span>
-                                                                        <span className="glass-template-item__description">
-                                                                            {template.environment === 'browser'
-                                                                                ? 'Browser task'
-                                                                                : template.environment === 'local'
-                                                                                    ? 'Mac task'
-                                                                                    : 'Sandbox task'}
-                                                                        </span>
-                                                                    </button>
-                                                                ))}
-                                                            </>
-                                                        )}
-                                                    </div>
-                                                </>
-                                            )}
-                                            <button
-                                                type="button"
-                                                className="glass-template-btn"
-                                                onClick={() => setShowTaskTemplates((value) => !value)}
-                                                aria-expanded={showTaskTemplates}
-                                                aria-haspopup="menu"
-                                                title="Start from a reusable task template"
-                                            >
-                                                Templates
-                                                <CaretIcon open={showTaskTemplates} />
-                                            </button>
-                                        </div>
-                                    )}
-                                    <button
-                                        type="button"
-                                        className="glass-addfile"
-                                        onClick={() => addFileRef.current?.click()}
-                                        aria-label="Add images, PDFs, or videos"
-                                        title="Attach images, PDFs, or videos"
-                                    >
-                                        <PaperclipIcon />
-                                    </button>
-                                    <button
-                                        type="button"
-                                        className="glass-addfile"
-                                        onClick={() => setShowVideoRecorder(true)}
-                                        aria-label="Record a video"
-                                        title="Record a video"
-                                    >
-                                        <VideoCameraIcon />
-                                    </button>
+                                                            <button
+                                                                type="button"
+                                                                className="glass-model-item"
+                                                                role="menuitem"
+                                                                disabled={mailBusy}
+                                                                onClick={() => {
+                                                                    setShowAttachMenu(false)
+                                                                    attachSelectedEmail('outlook')
+                                                                }}
+                                                            >
+                                                                <span className="glass-model-item__check"><MailIcon /></span>
+                                                                <span className="glass-model-item__text">
+                                                                    <span className="glass-model-item__name">Email — Outlook</span>
+                                                                    <span className="glass-model-item__sub">The message selected in Outlook</span>
+                                                                </span>
+                                                            </button>
+                                                        </>
+                                                    )}
+                                                </div>
+                                            </>
+                                        )}
+                                        <button
+                                            type="button"
+                                            className="glass-addfile"
+                                            onClick={() => setShowAttachMenu((value) => !value)}
+                                            aria-expanded={showAttachMenu}
+                                            aria-haspopup="menu"
+                                            aria-label="Attach from camera or files"
+                                            title="Attach — camera or files"
+                                        >
+                                            <PaperclipIcon />
+                                        </button>
+                                    </div>
                                     <input
                                         ref={addFileRef}
                                         type="file"
@@ -2028,71 +1907,23 @@ export function App(): React.JSX.Element {
                                         </button>
                                     </div>
                                     {dictation.supported && (
-                                        <div
-                                            className={`glass-voicepill${voiceOpen ? ' glass-voicepill--open' : ''}`}
-                                            role="group"
-                                            aria-label="Voice"
+                                        <button
+                                            type="button"
+                                            className={`glass-voicepill__mic${dictation.listening || dictation.transcribing ? ' glass-voicepill__mic--on' : ''}`}
+                                            onClick={dictation.toggle}
+                                            disabled={dictation.transcribing}
+                                            aria-label={dictation.listening ? 'Stop dictation' : 'Dictate'}
+                                            aria-pressed={dictation.listening}
+                                            title={
+                                                dictation.transcribing
+                                                    ? 'Transcribing your speech…'
+                                                    : dictation.listening
+                                                        ? 'Stop dictation'
+                                                        : 'Dictate: speak instead of typing'
+                                            }
                                         >
-                                            {voiceOpen && (
-                                                <>
-                                                    <div
-                                                        className="glass-model-backdrop"
-                                                        onClick={() => setVoiceOpen(false)}
-                                                    />
-                                                    <div className="glass-voice-menu" role="menu">
-                                                        {VOICE_VERSIONS.map(({ value, label, sub, title }) => (
-                                                            <button
-                                                                type="button"
-                                                                key={value}
-                                                                className={`glass-model-item${voiceVer === value ? ' glass-model-item--on' : ''}`}
-                                                                onClick={() => {
-                                                                    // Stop the current (possibly stuck)
-                                                                    // engine before switching.
-                                                                    cancelActive()
-                                                                    setVoiceVer(value)
-                                                                    setVoiceOpen(false)
-                                                                }}
-                                                                title={title}
-                                                            >
-                                                                <span className="glass-model-item__check">
-                                                                    {voiceVer === value ? <CheckIcon /> : null}
-                                                                </span>
-                                                                <span className="glass-model-item__text">
-                                                                    <span className="glass-model-item__name">{label}</span>
-                                                                    <span className="glass-model-item__sub">({sub})</span>
-                                                                </span>
-                                                            </button>
-                                                        ))}
-                                                    </div>
-                                                </>
-                                            )}
-                                            <button
-                                                type="button"
-                                                className={`glass-voicepill__mic${dictation.listening || dictation.transcribing ? ' glass-voicepill__mic--on' : ''}`}
-                                                onClick={dictation.toggle}
-                                                disabled={dictation.transcribing}
-                                                aria-label={dictation.listening ? 'Stop dictation' : 'Dictate'}
-                                                aria-pressed={dictation.listening}
-                                                title={
-                                                    dictation.transcribing
-                                                        ? 'Transcribing your speech…'
-                                                        : dictation.listening
-                                                            ? 'Stop dictation'
-                                                            : 'Dictate: speak instead of typing'
-                                                }
-                                            >
-                                                <VoiceBars active={dictation.listening} />
-                                            </button>
-                                            <button
-                                                type="button"
-                                                className="glass-voicepill__caret"
-                                                onClick={() => setVoiceOpen((v) => !v)}
-                                                title="Choose voice engine (V1 reliable / V2 fast)"
-                                                aria-label="Choose voice engine"
-                                            >
-                                                <CaretIcon open={voiceOpen} />
-                                            </button>
-                                        </div>
+                                            <VoiceBars active={dictation.listening} />
+                                        </button>
                                     )}
                                     {(isSubmittable(draft) || staged.length > 0) && (
                                         <button
