@@ -18,6 +18,20 @@ at a time, while you watch.
   Computer or Browser Use:  you hand it a goal, IT acts, you watch (and can stop it).
 ```
 
+## Download
+
+**[Download for macOS (Apple Silicon)](https://github.com/jaiminjariwala/computer-or-browser-use-and-smart-copilot/releases/latest)** — grab the `.dmg` from the latest release and drag the app to Applications.
+
+> **First launch:** right-click the app -> **Open** -> **Open**. The app is not
+> yet notarized with Apple, so macOS asks for this one-time confirmation.
+> After that it opens normally.
+
+No account, no server, no bundled key: on first run the app helps you add a
+free Gemini or OpenRouter key (or any OpenAI-compatible endpoint you already
+have), and everything runs locally with your own credentials.
+
+Prefer to build from source? See [docs/SETUP.md](docs/SETUP.md).
+
 ## Two modes, one app
 
 | Mode | What it does | Who acts |
