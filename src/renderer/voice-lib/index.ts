@@ -1,13 +1,10 @@
 /**
- * voice-lib — Glass on-device voice dictation component library (v1).
+ * voice-lib — shared voice UI.
  *
- * This is the frozen, known-good baseline for speech-to-text. Consume it from
- * the app via this barrel; do not edit these files when experimenting with new
- * approaches — add a new module/version instead so the working flow can't be
- * regressed. See README.md.
+ * The v1 dictation engine (Whisper tiny on WASM via @xenova/transformers)
+ * that used to live here was removed once every window moved to the
+ * voice-lib-v2 engine (Whisper base on WebGPU); shipping two transformers
+ * stacks doubled the bundled ONNX runtime for no benefit. Only the shared
+ * mic glyph remains.
  */
-export { useDictation } from './useDictation'
-export type { Dictation, DictationOptions } from './useDictation'
-export { useSmoothDictation } from './useSmoothDictation'
-export type { SmoothDictationOptions } from './useSmoothDictation'
-export { VoiceBars, AnimatedTranscript } from './VoiceUI'
+export { VoiceBars } from './VoiceUI'

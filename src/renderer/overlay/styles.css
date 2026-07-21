@@ -30,12 +30,6 @@ body {
     user-select: none;
 }
 
-/* Once the follow-up input is shown, restore a normal pointer so the user can
-   move to and use the input. */
-.overlay-root--input {
-    cursor: default;
-}
-
 /* Custom crosshair that follows the mouse. Drawn in the renderer because CSS
    `cursor` is unreliable over a transparent macOS window. mix-blend-mode keeps
    it visible on any background (light or dark). */
@@ -89,86 +83,4 @@ body {
     border-radius: 10px;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04), 0 10px 34px rgba(0, 0, 0, 0.18);
     pointer-events: none;
-}
-
-/* Optional follow-up input shown after drawing a region. */
-/* Capture input pill. A light frosted pill that stays visible on any
-   background: white-on-dark is naturally visible, and the dark hairline ring +
-   soft shadow make it stand out on light backgrounds too. */
-.overlay-followup {
-    position: fixed;
-    z-index: 10;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    width: 340px;
-    padding: 7px 8px 7px 14px;
-    background: rgba(255, 255, 255, 0.92);
-    backdrop-filter: blur(20px) saturate(180%);
-    -webkit-backdrop-filter: blur(20px) saturate(180%);
-    border-radius: 22px;
-    box-shadow:
-        0 0 0 1px rgba(0, 0, 0, 0.28),
-        0 0 0 2px rgba(255, 255, 255, 0.12),
-        0 14px 40px rgba(0, 0, 0, 0.45);
-}
-
-.overlay-followup:focus-within {
-    border-color: #c9c9cf;
-}
-
-.overlay-followup__input {
-    flex: 1 1 auto;
-    border: none;
-    outline: none;
-    background: transparent;
-    color: #1a1a1c;
-    font: inherit;
-    font-size: 13.5px;
-    line-height: 1.4;
-    cursor: text;
-}
-
-.overlay-followup__input::placeholder {
-    color: #8a8a90;
-}
-
-/* Voice dictation mic button (capture input): white background, black bars. */
-.overlay-followup__mic {
-    flex: 0 0 auto;
-    width: 30px;
-    height: 30px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    color: #1a1a1c;
-    background: transparent;
-    border: none;
-    border-radius: 50%;
-    cursor: pointer;
-}
-
-.overlay-followup__mic:hover {
-    background: rgba(0, 0, 0, 0.06);
-}
-
-.overlay-followup__mic:disabled {
-    opacity: 0.5;
-    cursor: default;
-}
-
-/* Animated voice equalizer shown on the mic button. */
-.glass-voicebars {
-    display: inline-flex;
-    align-items: center;
-    gap: 2.5px;
-    height: 16px;
-}
-
-.glass-voicebars__bar {
-    width: 2.1px;
-    height: 14px;
-    border-radius: 2px;
-    background: currentColor;
-    transform-origin: center;
 }
