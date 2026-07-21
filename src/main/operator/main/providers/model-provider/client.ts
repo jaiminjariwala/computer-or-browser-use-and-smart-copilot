@@ -4,6 +4,7 @@ import type {
     ChatCompletionTool,
     ChatCompletionToolChoiceOption
 } from 'openai/resources/chat/completions'
+import { chromiumFetch } from '../chromium-fetch'
 
 /**
  * The narrow OpenAI-compatible client surface the providers rely on.
@@ -64,6 +65,15 @@ export interface OperatorChatClient {
 /** Factory for an OpenAI-compatible client pointed at a provider's endpoint. */
 export type ChatClientFactory = (baseURL: string, apiKey: string) => OperatorChatClient
 
-/** Default factory: a real `openai` client pointed at the provider endpoint. */
+/**
+ * Default factory: a real `openai` client pointed at the provider endpoint.
+ * Requests run over Chromium's network stack (see `../chromium-fetch`): the
+ * SDK's default undici fetch drops Gemini responses mid-body, which silently
+ * failed the availability probe and every reasoning step.
+ */
 export const createOperatorChatClient: ChatClientFactory = (baseURL, apiKey) =>
-    new OpenAI({ baseURL, apiKey }) as unknown as OperatorChatClient
+    new OpenAI({
+        baseURL,
+        apiKey,
+        fetch: chromiumFetch as unknown as NonNullable<ConstructorParameters<typeof OpenAI>[0]>['fetch']
+    }) as unknown as OperatorChatClient

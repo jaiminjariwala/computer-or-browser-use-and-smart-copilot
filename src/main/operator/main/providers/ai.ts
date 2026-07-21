@@ -11,6 +11,7 @@ import type {
     Turn,
     TurnCapture
 } from '../vendor-types'
+import { chromiumFetch } from './chromium-fetch'
 
 /**
  * OpenAI-compatible gateway client — VENDORED from Click Copilot `ai.ts` (Task 2).
@@ -345,9 +346,17 @@ export interface ChatClient {
     }
 }
 
-/** Default factory: a real `openai` client pointed at the gateway. */
+/**
+ * Default factory: a real `openai` client pointed at the gateway. Runs over
+ * Chromium's network stack (see `./chromium-fetch`) because the SDK's default
+ * undici fetch drops Gemini responses mid-body ("Premature close").
+ */
 export function createGatewayClient(config: GatewayConfig, apiKey: string): ChatClient {
-    return new OpenAI({ baseURL: config.baseURL, apiKey }) as unknown as ChatClient
+    return new OpenAI({
+        baseURL: config.baseURL,
+        apiKey,
+        fetch: chromiumFetch as unknown as NonNullable<ConstructorParameters<typeof OpenAI>[0]>['fetch']
+    }) as unknown as ChatClient
 }
 
 export interface AIClientOptions {
