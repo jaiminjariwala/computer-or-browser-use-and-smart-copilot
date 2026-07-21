@@ -2,6 +2,7 @@ import type { ProviderStatus, StartGoalInput, StartResult } from '@op-shared/typ
 import { toAgentSessionView } from '../session'
 import { registerConfigIpc } from '../config-ipc'
 import { registerOperatorIpc, emitPermissionChanged, EMPTY_SESSION_VIEW } from '../ipc'
+import { registerPlaybookIpc } from '../playbooks-ipc'
 import { createModelProvider } from '../providers/model-provider'
 import type { OperatorServices } from './services'
 
@@ -39,6 +40,7 @@ export function wireOperatorIpc(
     } = services
 
     const configReg = registerConfigIpc({ store: configStore, getConsoleWindow: consoleWindow })
+    const disposePlaybookIpc = registerPlaybookIpc(services.playbooks)
 
     const disposeOperatorIpc = registerOperatorIpc({
         getConsoleWindow: consoleWindow,
@@ -60,7 +62,11 @@ export function wireOperatorIpc(
         // On-screen Emergency_Stop (Req 7.2, 7.8): same handler as the hotkey.
         onEmergencyStop: () => safety.onEmergencyStop(),
         getSession: () => sessionManager.getSessionView() ?? EMPTY_SESSION_VIEW,
-        onListSessions: () => sessions.listSessions(),
+        // The sidebar list must show the persisted active task too: after "New
+        // task" clears the renderer's workspace the previous task is not yet
+        // archived (archiving happens when the NEXT goal is created), and it
+        // would otherwise disappear from the rail entirely.
+        onListSessions: () => sessions.listSessions(undefined, { includeCurrent: true }),
         onOpenSession: async (id) => {
             const current = sessionManager.getSession()
             // The active task is synthesized into the rail and can be newer than
@@ -110,5 +116,11 @@ export function wireOperatorIpc(
         }
     })
 
-    return { disposeOperatorIpc, disposeConfigIpc: configReg.dispose }
+    return {
+        disposeOperatorIpc: () => {
+            disposeOperatorIpc()
+            disposePlaybookIpc()
+        },
+        disposeConfigIpc: configReg.dispose
+    }
 }

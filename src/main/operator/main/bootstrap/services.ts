@@ -23,6 +23,8 @@ import {
 import { PerceptionService } from '../perception'
 import { ProviderChainRouter } from '../reasoning'
 import { createSafetyController, type SafetyController } from '../safety'
+import { createTaskNotifier } from '../notifications'
+import { PlaybookStore } from '../playbooks'
 import { createActionExecutor } from '../executor'
 import { createAgentLoop, type AgentLoop, type LoopEmitters, type LoopReasoning } from '../loop'
 import {
@@ -68,6 +70,8 @@ export interface OperatorServices {
     configStore: ConfigStore
     /** Persisted session store (restore / archive / flush). */
     sessions: SessionStore
+    /** Saved reusable task templates (playbooks). */
+    playbooks: PlaybookStore
     /** Evict deleted archives from in-memory recall caches. */
     forgetSessionMemories: (ids: readonly string[]) => void
     /** Session / Trajectory Manager (records Goal, autonomy, budget, steps). */
@@ -112,6 +116,7 @@ export function createOperatorServices(options: OperatorServiceOptions = {}): Op
 
     const configStore = new ConfigStore()
     const sessions = new SessionStore({ userDataDir: app.getPath('userData') })
+    const playbooks = new PlaybookStore({ userDataDir: app.getPath('userData') })
     const memory = new SessionMemory(sessions)
 
     const permissionProbe = createElectronPermissionProbe()
@@ -270,10 +275,27 @@ export function createOperatorServices(options: OperatorServiceOptions = {}): Op
     // Loop side-effect emitters → the design's main→renderer channels. The
     // indicator emitters drive the Control_Indicator overlay in lockstep with
     // in-control state and feed its availability back into the Safety gate.
+    // Notification Center pings for unattended runs: completion / failure /
+    // help / confirmation banners fire only while the console is unfocused,
+    // and clicking one brings the console back (Task-finished notifications).
+    const notifier = createTaskNotifier({
+        isWindowFocused: () => consoleWindow()?.isFocused() ?? false,
+        focusWindow: () => windows.showConsole()
+    })
+
     const emitters: LoopEmitters = {
-        emitState: (view) => emitStateChanged(consoleWindow(), view),
-        emitTrajectoryAppended: (step) => emitTrajectoryAppended(consoleWindow(), step),
-        emitConfirmationRequired: (req) => emitConfirmationRequired(consoleWindow(), req),
+        emitState: (view) => {
+            emitStateChanged(consoleWindow(), view)
+            notifier.onStateChanged(view)
+        },
+        emitTrajectoryAppended: (step) => {
+            emitTrajectoryAppended(consoleWindow(), step)
+            notifier.onStepAppended(step)
+        },
+        emitConfirmationRequired: (req) => {
+            emitConfirmationRequired(consoleWindow(), req)
+            notifier.onConfirmationRequired(req)
+        },
         emitIndicatorShow: () => {
             // Show the overlay; if it cannot be displayed, tell the Safety
             // Controller so the gate blocks (and the loop halts) per Req 12.4.
@@ -297,7 +319,10 @@ export function createOperatorServices(options: OperatorServiceOptions = {}): Op
         emitError: (error) => emitError(consoleWindow(), error),
         // The agent's question is surfaced to the chat so the user can answer it
         // (the answer becomes session guidance and the loop resumes).
-        presentHelp: (question) => emitHelpRequired(consoleWindow(), question)
+        presentHelp: (question) => {
+            emitHelpRequired(consoleWindow(), question)
+            notifier.onHelpRequired(question)
+        }
         // presentCompletion is intentionally omitted: the completion step is
         // already recorded in the Trajectory (emitted via `trajectory:appended`)
         // and the terminal state is broadcast on `state:changed`.
@@ -322,6 +347,7 @@ export function createOperatorServices(options: OperatorServiceOptions = {}): Op
         windows,
         configStore,
         sessions,
+        playbooks,
         forgetSessionMemories: (ids: readonly string[]) => memory.forget(ids),
         sessionManager,
         loop: agentLoop,

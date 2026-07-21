@@ -19,6 +19,7 @@ import type {
 } from './provider'
 import type { PermissionSnapshot } from './permissions'
 import type { OperatorError } from './errors'
+import type { Playbook, PlaybookInput } from './playbook'
 
 // ---------------------------------------------------------------------------
 // Agent-loop state (for the state:changed event view)
@@ -131,6 +132,11 @@ export interface OperatorBridge {
     openSession?(id: string): Promise<AgentSessionView> // Req 18.5
     getConfigStatus?(): Promise<{ hasCredentials: boolean; models: string[] }> // Req 15.4, 15.6
     saveConfig?(cfg: GatewayConfigInput): Promise<void> // Req 15.2
+    // Playbooks: saved reusable task templates (list / upsert / delete).
+    // Save + delete return the updated list (one round-trip for the renderer).
+    listPlaybooks?(): Promise<Playbook[]>
+    savePlaybook?(input: PlaybookInput): Promise<Playbook[]>
+    deletePlaybooks?(ids: string[]): Promise<Playbook[]>
     getPermissions?(): Promise<PermissionSnapshot> // Req 16, 17
 
     // Console -> main : Model_Provider management (Req 21)
