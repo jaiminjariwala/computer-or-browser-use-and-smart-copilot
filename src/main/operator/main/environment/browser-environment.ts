@@ -25,7 +25,9 @@ import type { Environment, EnvironmentHealth, EnvironmentViewport } from './type
  *
  * Playwright is imported lazily (and is marked `external` in the main build), so
  * the app never loads it unless the user actually selects this environment.
- * Chromium must be installed once via `npx playwright install chromium`.
+ * No browser install step is required: launch falls back from the
+ * Playwright-managed Chromium (dev machines) to the user's own Chrome / Edge /
+ * Brave, so a fresh download of the app can drive the web immediately.
  */
 
 /** One interactive element on the page, in CSS-pixel page coordinates. */
@@ -189,7 +191,41 @@ export class PlaywrightBrowserEnvironment implements Environment {
         if (this.browser) return
         // Lazy + external import so the app only touches Playwright on demand.
         const { chromium } = await import('playwright')
-        this.browser = await chromium.launch({ headless: this.headless })
+        // Zero-setup launch chain. A packaged download has no Playwright
+        // browser cache, so after the managed Chromium (present on dev
+        // machines) we drive the browsers people already have via Playwright
+        // channels: Chrome, then Edge, then Brave/Chromium at their standard
+        // macOS paths. No downloads, no terminal steps.
+        const attempts: Array<{ label: string } & Parameters<typeof chromium.launch>[0]> = [
+            { label: 'Playwright-managed Chromium' },
+            { label: 'Google Chrome', channel: 'chrome' },
+            { label: 'Microsoft Edge', channel: 'msedge' },
+            {
+                label: 'Brave',
+                executablePath: '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser'
+            },
+            {
+                label: 'Chromium.app',
+                executablePath: '/Applications/Chromium.app/Contents/MacOS/Chromium'
+            }
+        ]
+        let lastError: unknown = null
+        for (const { label, ...options } of attempts) {
+            try {
+                this.browser = await chromium.launch({ ...options, headless: this.headless })
+                break
+            } catch (err) {
+                lastError = err
+                console.warn(`[browser-env] launch via ${label} failed; trying next option`)
+            }
+        }
+        if (!this.browser) {
+            throw new Error(
+                'Browser Use needs a Chromium-based browser. Install Google Chrome ' +
+                '(or Microsoft Edge) and try again.',
+                { cause: lastError ?? undefined }
+            )
+        }
         this.context = await this.browser.newContext({
             viewport: { width: this.vp.width, height: this.vp.height }
         })

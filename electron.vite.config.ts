@@ -15,12 +15,24 @@ export default defineConfig({
         // GitHub OAuth client ids are public identifiers. Embed the value used
         // for this build while still allowing a runtime environment override.
         define: {
+            // Public OAuth client id for "Computer or Browser Use and Smart
+            // Copilot" (Device Flow — no secret exists in this app). Override
+            // with GITHUB_OAUTH_CLIENT_ID to point builds at a different app.
             __GITHUB_OAUTH_CLIENT_ID__: JSON.stringify(
-                process.env.GITHUB_OAUTH_CLIENT_ID ?? ''
+                process.env.GITHUB_OAUTH_CLIENT_ID ?? 'Ov23lifIQM3WCHRFLS04'
             )
         },
         build: {
             outDir: 'out/main',
+            // electron-vite auto-externalizes every package.json dependency in
+            // the main build. The packaged app ships WITHOUT node_modules
+            // (electron-builder.yml excludes all but playwright), so anything
+            // the main process needs at runtime must be bundled into
+            // out/main/index.js. `openai` is required eagerly by ai.ts —
+            // exclude it from externalization so rollup inlines it (and its
+            // dep tree); otherwise the packaged app dies at startup with
+            // "Cannot find module 'openai'".
+            externalizeDeps: { exclude: ['openai'] },
             rollupOptions: {
                 input: {
                     index: resolve(__dirname, 'src/main/index.ts')

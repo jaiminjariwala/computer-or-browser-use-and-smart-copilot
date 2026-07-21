@@ -11,16 +11,27 @@ directories:
 #
 # electron-vite bundles the main process (out/main/index.js) and the renderer
 # (out/renderer/**, including the transformers.js / ONNX-Runtime wasm) into
-# self-contained output, so NOTHING under node_modules is required at runtime.
-# By default electron-builder still copies every production dependency into the
-# app (@huggingface/transformers, onnxruntime-node, sharp, ...), which alone is
+# self-contained output, so almost nothing under node_modules is required at
+# runtime. By default electron-builder still copies every production
+# dependency into the app (@huggingface/transformers, ...), which alone is
 # ~1GB of dead weight. Excluding node_modules drops the packaged app from
-# ~2GB to a few hundred MB (mostly the Electron framework itself) with no
-# behavior change, because those libs already live inside out/.
+# ~2GB to a few hundred MB (mostly the Electron framework itself).
+#
+# The ONE runtime exception is Playwright: it is marked `external` in the main
+# build (imported lazily when Browser Use starts), so its two packages must
+# ship. They are unpacked from the asar because playwright-core spawns its
+# driver from real files on disk. At launch, Browser Use falls back from the
+# Playwright-managed Chromium to the user's own Chrome/Edge/Brave, so no
+# browser download is ever needed.
 files:
   - out/**
   - package.json
   - '!node_modules/**/*'
+  - node_modules/playwright/**
+  - node_modules/playwright-core/**
+asarUnpack:
+  - node_modules/playwright/**
+  - node_modules/playwright-core/**
 
 # macOS configuration.
 mac:
@@ -36,6 +47,9 @@ mac:
   extendInfo:
     NSCameraUsageDescription: Computer or Browser Use and Smart Copilot uses the camera when you choose to record a video attachment.
     NSMicrophoneUsageDescription: Computer or Browser Use and Smart Copilot uses the microphone for voice dictation and, when allowed, audio in video attachments you record.
+    # The Mail connector reads the currently selected message via Apple events
+    # (JXA). macOS shows this string in the Automation permission prompt.
+    NSAppleEventsUsageDescription: Computer or Browser Use and Smart Copilot reads the email you selected in Mail or Outlook, only when you attach it to a chat.
   hardenedRuntime: true
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist

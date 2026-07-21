@@ -1,6 +1,6 @@
 {
   "name": "computer-or-browser-use-and-smart-copilot",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Computer or Browser Use and Smart Copilot - a screen-aware macOS app that advises you (Smart Copilot) or acts for you in a browser or on your Mac (Computer or Browser Use).",
   "main": "out/main/index.js",
   "author": "",
@@ -20,8 +20,6 @@
     "@fontsource-variable/inter": "^5.2.8",
     "@huggingface/transformers": "^3.8.1",
     "@monaco-editor/react": "^4.7.0",
-    "@xenova/transformers": "^2.0.1",
-    "framer-motion": "^11.18.2",
     "monaco-editor": "^0.52.2",
     "openai": "^4.67.3",
     "pdfjs-dist": "^6.1.200",
