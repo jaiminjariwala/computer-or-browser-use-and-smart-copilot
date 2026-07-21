@@ -145,6 +145,8 @@ export class GitHubAuthService {
     private attempt = 0
     /** Active token reads/writes/clears that a replacement login must not overtake. */
     private readonly tokenOperations = new Set<Promise<unknown>>()
+    /** The in-flight challenge's verification page, reopenable until it expires. */
+    private activeVerification: { uri: string; expiresAtMs: number } | null = null
 
     constructor(options: GitHubAuthServiceOptions) {
         this.clientId = options.clientId.trim()
@@ -222,6 +224,7 @@ export class GitHubAuthService {
                 verificationUri,
                 expiresAt: new Date(expiresAtMs).toISOString()
             }
+            this.activeVerification = { uri: verificationUri, expiresAtMs }
             this.publish({
                 state: 'authorizing',
                 message: 'Enter the code in the GitHub page opened in your browser.'
@@ -239,6 +242,19 @@ export class GitHubAuthService {
             }
             throw error
         }
+    }
+
+    /**
+     * Reopen the verification page for the in-flight Device Flow challenge —
+     * the rescue path when the user closes the GitHub tab before pasting the
+     * code. Only the URI main itself received from GitHub is ever opened.
+     */
+    async openVerificationPage(): Promise<void> {
+        const active = this.activeVerification
+        if (!active || this.status.state !== 'authorizing' || this.now() >= active.expiresAtMs) {
+            throw new Error('No GitHub code is waiting right now. Start the sign-in again.')
+        }
+        await this.openExternal(active.uri)
     }
 
     async logout(): Promise<void> {
@@ -523,6 +539,10 @@ export function registerGitHubAuthIpc(options: GitHubAuthIpcOptions): {
         authorize(event)
         return service.logout()
     })
+    ipcMain.handle('github-auth:open-verification', (event): Promise<void> => {
+        authorize(event)
+        return service.openVerificationPage()
+    })
 
     return {
         service,
@@ -531,6 +551,7 @@ export function registerGitHubAuthIpc(options: GitHubAuthIpcOptions): {
             ipcMain.removeHandler('github-auth:status')
             ipcMain.removeHandler('github-auth:start')
             ipcMain.removeHandler('github-auth:logout')
+            ipcMain.removeHandler('github-auth:open-verification')
         }
     }
 }
