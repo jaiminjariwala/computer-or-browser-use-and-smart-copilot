@@ -1,13 +1,18 @@
 import React, { useCallback, useEffect, useState } from 'react'
+import type { MemoryEntry } from '@shared/types'
 import { getConfigBridge } from './config-bridge'
+import { getChatBridge } from './bridges'
 
 /**
- * Gateway settings form (Req 7.2, 7.4).
+ * AI settings — deliberately small. Two ways to connect, nothing else:
  *
- * Primary gateway (URL, model, key) plus an optional fallback gateway used when
- * the primary is unavailable (e.g. a local Ollama instance). The keys are sent
- * to the main process which encrypts and stores them separately. A connection
- * indicator (green = connected, orange = not) reflects the primary credentials.
+ *  1. A free key (Google Gemini or OpenRouter), pasted once.
+ *  2. Your own OpenAI-compatible endpoint (company gateway or personal), with
+ *     base URL + model + key.
+ *
+ * Keys are sent to the main process, encrypted with the macOS keychain, and
+ * never rendered back. The chain tries your own endpoint first (when set),
+ * then the free providers.
  */
 
 type SaveState =
@@ -49,24 +54,16 @@ const hintStyle: React.CSSProperties = {
     lineHeight: 1.4
 }
 
+const storedDot = <span style={{ color: '#19c37d' }}>●</span>
+
 export function Settings(): React.JSX.Element {
     const [baseURL, setBaseURL] = useState('')
     const [model, setModel] = useState('')
     const [apiKey, setApiKey] = useState('')
     const [hasCredentials, setHasCredentials] = useState(false)
-    const [fallbackBaseURL, setFallbackBaseURL] = useState('')
-    const [fallbackModel, setFallbackModel] = useState('')
-    const [fallbackApiKey, setFallbackApiKey] = useState('')
-    const [hasFallback, setHasFallback] = useState(false)
-    // Free hosted fallback chain (each: paste a key once, used automatically).
     const [openrouterKey, setOpenrouterKey] = useState('')
-    const [openrouterModel, setOpenrouterModel] = useState('')
     const [hasOpenrouter, setHasOpenrouter] = useState(false)
-    const [glmKey, setGlmKey] = useState('')
-    const [glmModel, setGlmModel] = useState('')
-    const [hasGlm, setHasGlm] = useState(false)
     const [geminiKey, setGeminiKey] = useState('')
-    const [geminiModel, setGeminiModel] = useState('')
     const [hasGemini, setHasGemini] = useState(false)
     const [bridgeMissing, setBridgeMissing] = useState(false)
     const [save, setSave] = useState<SaveState>({ kind: 'idle' })
@@ -83,14 +80,7 @@ export function Settings(): React.JSX.Element {
             setBaseURL(status.baseURL)
             setModel(status.model)
             setHasCredentials(status.hasCredentials)
-            setFallbackBaseURL(status.fallbackBaseURL)
-            setFallbackModel(status.fallbackModel)
-            setHasFallback(status.hasFallback)
-            setOpenrouterModel(status.openrouterModel)
             setHasOpenrouter(status.hasOpenrouter)
-            setGlmModel(status.glmModel)
-            setHasGlm(status.hasGlm)
-            setGeminiModel(status.geminiModel)
             setHasGemini(status.hasGemini)
         } catch {
             /* Leave fields as-is; the user can still enter values. */
@@ -100,6 +90,8 @@ export function Settings(): React.JSX.Element {
     useEffect(() => {
         void loadStatus()
     }, [loadStatus])
+
+    const anyConnected = hasCredentials || hasOpenrouter || hasGemini
 
     const onSubmit = useCallback(
         async (e: React.FormEvent) => {
@@ -115,20 +107,11 @@ export function Settings(): React.JSX.Element {
                     baseURL: baseURL.trim(),
                     model: model.trim(),
                     apiKey,
-                    fallbackBaseURL: fallbackBaseURL.trim(),
-                    fallbackModel: fallbackModel.trim(),
-                    fallbackApiKey,
                     openrouterApiKey: openrouterKey,
-                    openrouterModel: openrouterModel.trim(),
-                    glmApiKey: glmKey,
-                    glmModel: glmModel.trim(),
-                    geminiApiKey: geminiKey,
-                    geminiModel: geminiModel.trim()
+                    geminiApiKey: geminiKey
                 })
                 setApiKey('')
-                setFallbackApiKey('')
                 setOpenrouterKey('')
-                setGlmKey('')
                 setGeminiKey('')
                 setSave({ kind: 'saved' })
                 await loadStatus()
@@ -137,33 +120,19 @@ export function Settings(): React.JSX.Element {
                 setSave({ kind: 'error', message })
             }
         },
-        [
-            baseURL,
-            model,
-            apiKey,
-            fallbackBaseURL,
-            fallbackModel,
-            fallbackApiKey,
-            openrouterKey,
-            openrouterModel,
-            glmKey,
-            glmModel,
-            geminiKey,
-            geminiModel,
-            loadStatus
-        ]
+        [baseURL, model, apiKey, openrouterKey, geminiKey, loadStatus]
     )
 
     return (
-        <section aria-label="Gateway settings" className="glass-settings">
+        <section aria-label="AI settings" className="glass-settings">
             <div className="glass-settings__status">
                 <span
                     className="glass-settings__dot"
-                    style={{ background: hasCredentials ? '#19c37d' : '#5b8def' }}
-                    title={hasCredentials ? 'Connected' : 'Running on-device (offline)'}
+                    style={{ background: anyConnected ? '#19c37d' : '#d29922' }}
+                    title={anyConnected ? 'An AI provider is connected' : 'No AI connected yet'}
                 />
                 <span className="glass-settings__statuslabel">
-                    {hasCredentials ? 'Connected' : 'On-device (offline)'}
+                    {anyConnected ? 'Connected' : 'Not connected'}
                 </span>
             </div>
 
@@ -174,8 +143,51 @@ export function Settings(): React.JSX.Element {
             )}
 
             <form onSubmit={onSubmit}>
+                <p style={sectionTitle}>Free keys</p>
+                <p style={hintStyle}>
+                    Paste one and you're done — it's encrypted on this Mac and used
+                    automatically. Either provider works; with both, Gemini is tried first
+                    for tasks and OpenRouter first for chat fallback.
+                </p>
+
+                <label style={labelStyle} htmlFor="glass-gem-key">
+                    Google Gemini key {hasGemini && storedDot}
+                </label>
+                <p style={hintStyle}>Get it at aistudio.google.com/app/apikey</p>
+                <input
+                    id="glass-gem-key"
+                    type="password"
+                    autoComplete="off"
+                    placeholder={hasGemini ? '•••••••• (stored — paste to replace)' : 'AIza…'}
+                    value={geminiKey}
+                    onChange={(e) => setGeminiKey(e.target.value)}
+                    style={inputStyle}
+                />
+
+                <label style={labelStyle} htmlFor="glass-or-key">
+                    OpenRouter key {hasOpenrouter && storedDot}
+                </label>
+                <p style={hintStyle}>Get it at openrouter.ai/settings/keys</p>
+                <input
+                    id="glass-or-key"
+                    type="password"
+                    autoComplete="off"
+                    placeholder={hasOpenrouter ? '•••••••• (stored — paste to replace)' : 'sk-or-…'}
+                    value={openrouterKey}
+                    onChange={(e) => setOpenrouterKey(e.target.value)}
+                    style={inputStyle}
+                />
+
+                <p style={sectionTitle}>
+                    Your own AI (company or personal) {hasCredentials && storedDot}
+                </p>
+                <p style={hintStyle}>
+                    Any OpenAI-compatible endpoint: a corporate gateway, a paid account, or
+                    a local server. When set, it is always tried first.
+                </p>
+
                 <label style={labelStyle} htmlFor="glass-baseurl">
-                    Gateway base URL
+                    Base URL
                 </label>
                 <input
                     id="glass-baseurl"
@@ -211,122 +223,6 @@ export function Settings(): React.JSX.Element {
                     style={inputStyle}
                 />
 
-                <p style={sectionTitle}>
-                    Fallback gateway {hasFallback && <span style={{ color: '#19c37d' }}>●</span>}
-                </p>
-                <p style={hintStyle}>
-                    Used automatically when the primary is unavailable. For a free local option
-                    (private, offline), install Ollama and use base URL http://localhost:11434/v1
-                    with a vision model like llama3.2-vision. For higher quality, point it at any
-                    OpenAI-compatible vision API such as Google Gemini's free tier. That option
-                    sends captures to a third party.
-                </p>
-
-                <label style={labelStyle} htmlFor="glass-fb-baseurl">
-                    Fallback base URL
-                </label>
-                <input
-                    id="glass-fb-baseurl"
-                    type="url"
-                    placeholder="http://localhost:11434/v1"
-                    value={fallbackBaseURL}
-                    onChange={(e) => setFallbackBaseURL(e.target.value)}
-                    style={inputStyle}
-                />
-
-                <label style={labelStyle} htmlFor="glass-fb-model">
-                    Fallback model
-                </label>
-                <input
-                    id="glass-fb-model"
-                    type="text"
-                    placeholder="llava"
-                    value={fallbackModel}
-                    onChange={(e) => setFallbackModel(e.target.value)}
-                    style={inputStyle}
-                />
-
-                <label style={labelStyle} htmlFor="glass-fb-apikey">
-                    Fallback API key {fallbackBaseURL && <span style={{ color: '#a6a6ad' }}>(optional)</span>}
-                </label>
-                <input
-                    id="glass-fb-apikey"
-                    type="password"
-                    autoComplete="off"
-                    placeholder="Leave blank for Ollama"
-                    value={fallbackApiKey}
-                    onChange={(e) => setFallbackApiKey(e.target.value)}
-                    style={inputStyle}
-                />
-
-                <p style={sectionTitle}>Free fallback models (optional)</p>
-                <p style={hintStyle}>
-                    Paste a free API key once and it is used automatically whenever the primary
-                    gateway is down, in this order, before the on-device model. Each is free and
-                    OpenAI-compatible. Get keys at openrouter.ai/keys, open.bigmodel.cn, and
-                    aistudio.google.com/apikey.
-                </p>
-
-                <label style={labelStyle} htmlFor="glass-or-key">
-                    OpenRouter key {hasOpenrouter && <span style={{ color: '#19c37d' }}>●</span>}
-                </label>
-                <input
-                    id="glass-or-key"
-                    type="password"
-                    autoComplete="off"
-                    placeholder={hasOpenrouter ? '•••••••• (stored)' : 'sk-or-...'}
-                    value={openrouterKey}
-                    onChange={(e) => setOpenrouterKey(e.target.value)}
-                    style={inputStyle}
-                />
-                <input
-                    type="text"
-                    placeholder="openrouter/free"
-                    value={openrouterModel}
-                    onChange={(e) => setOpenrouterModel(e.target.value)}
-                    style={{ ...inputStyle, marginTop: 6 }}
-                />
-
-                <label style={labelStyle} htmlFor="glass-glm-key">
-                    Zhipu GLM key {hasGlm && <span style={{ color: '#19c37d' }}>●</span>}
-                </label>
-                <input
-                    id="glass-glm-key"
-                    type="password"
-                    autoComplete="off"
-                    placeholder={hasGlm ? '•••••••• (stored)' : 'Zhipu API key'}
-                    value={glmKey}
-                    onChange={(e) => setGlmKey(e.target.value)}
-                    style={inputStyle}
-                />
-                <input
-                    type="text"
-                    placeholder="glm-4v-flash"
-                    value={glmModel}
-                    onChange={(e) => setGlmModel(e.target.value)}
-                    style={{ ...inputStyle, marginTop: 6 }}
-                />
-
-                <label style={labelStyle} htmlFor="glass-gem-key">
-                    Google Gemini key {hasGemini && <span style={{ color: '#19c37d' }}>●</span>}
-                </label>
-                <input
-                    id="glass-gem-key"
-                    type="password"
-                    autoComplete="off"
-                    placeholder={hasGemini ? '•••••••• (stored)' : 'AIza...'}
-                    value={geminiKey}
-                    onChange={(e) => setGeminiKey(e.target.value)}
-                    style={inputStyle}
-                />
-                <input
-                    type="text"
-                    placeholder="gemini-2.5-flash"
-                    value={geminiModel}
-                    onChange={(e) => setGeminiModel(e.target.value)}
-                    style={{ ...inputStyle, marginTop: 6 }}
-                />
-
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 16 }}>
                     <button
                         type="submit"
@@ -353,6 +249,155 @@ export function Settings(): React.JSX.Element {
                     )}
                 </div>
             </form>
+
+            <MemorySection />
         </section>
+    )
+}
+
+/**
+ * Persistent memory — the audit surface. Everything the assistant remembers
+ * lives here: add a fact, delete one, or clear the lot. Entries also arrive
+ * from chat when a message starts with "remember …". Local JSON only; the
+ * only place memories ever travel is inside your own AI requests.
+ */
+function MemorySection(): React.JSX.Element {
+    const [entries, setEntries] = useState<MemoryEntry[]>([])
+    const [newFact, setNewFact] = useState('')
+
+    const bridge = getChatBridge()
+
+    useEffect(() => {
+        if (bridge && typeof bridge.listMemories === 'function') {
+            void bridge.listMemories().then(setEntries).catch(() => undefined)
+        }
+        // The bridge is a stable global; run once on mount.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [])
+
+    const add = useCallback(() => {
+        const text = newFact.trim()
+        if (text.length === 0) return
+        if (!bridge || typeof bridge.addMemory !== 'function') return
+        void bridge
+            .addMemory(text)
+            .then((list) => {
+                setEntries(list)
+                setNewFact('')
+            })
+            .catch(() => undefined)
+    }, [bridge, newFact])
+
+    const remove = useCallback(
+        (id: string) => {
+            if (!bridge || typeof bridge.deleteMemory !== 'function') return
+            void bridge.deleteMemory(id).then(setEntries).catch(() => undefined)
+        },
+        [bridge]
+    )
+
+    const clearAll = useCallback(() => {
+        if (!bridge || typeof bridge.clearMemories !== 'function') return
+        void bridge.clearMemories().then(setEntries).catch(() => undefined)
+    }, [bridge])
+
+    return (
+        <div aria-label="Persistent memory">
+            <h3 style={sectionTitle}>Memory</h3>
+            <p style={hintStyle}>
+                Facts the assistant keeps across chats. Say “remember …” in a chat, or add one
+                here. Stored only on this Mac; delete anything, anytime.
+            </p>
+
+            <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                <input
+                    type="text"
+                    placeholder="e.g. I prefer short answers"
+                    value={newFact}
+                    onChange={(e) => setNewFact(e.target.value)}
+                    onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                            e.preventDefault()
+                            add()
+                        }
+                    }}
+                    style={{ ...inputStyle, flex: 1 }}
+                    aria-label="New memory"
+                />
+                <button
+                    type="button"
+                    onClick={add}
+                    disabled={newFact.trim().length === 0}
+                    style={{
+                        padding: '7px 14px',
+                        fontSize: 13,
+                        color: 'var(--text)',
+                        background: 'var(--field-bg)',
+                        border: '1px solid var(--field-border)',
+                        borderRadius: 8,
+                        cursor: newFact.trim().length === 0 ? 'default' : 'pointer',
+                        opacity: newFact.trim().length === 0 ? 0.5 : 1
+                    }}
+                >
+                    Add
+                </button>
+            </div>
+
+            {entries.length === 0 ? (
+                <p style={{ ...hintStyle, margin: '10px 0 0' }}>Nothing remembered yet.</p>
+            ) : (
+                <div style={{ marginTop: 10 }}>
+                    {entries.map((entry) => (
+                        <div
+                            key={entry.id}
+                            style={{
+                                display: 'flex',
+                                alignItems: 'flex-start',
+                                gap: 8,
+                                padding: '7px 2px',
+                                borderBottom: '1px solid var(--field-border)'
+                            }}
+                        >
+                            <span style={{ flex: 1, fontSize: 12.5, color: 'var(--text)', lineHeight: 1.45 }}>
+                                {entry.text}
+                            </span>
+                            <button
+                                type="button"
+                                onClick={() => remove(entry.id)}
+                                aria-label={`Forget "${entry.text}"`}
+                                title="Forget this"
+                                style={{
+                                    border: 'none',
+                                    background: 'transparent',
+                                    color: 'var(--text-dim)',
+                                    fontSize: 14,
+                                    lineHeight: 1,
+                                    cursor: 'pointer',
+                                    padding: '2px 6px'
+                                }}
+                            >
+                                ×
+                            </button>
+                        </div>
+                    ))}
+                    <button
+                        type="button"
+                        onClick={clearAll}
+                        style={{
+                            marginTop: 10,
+                            padding: '6px 12px',
+                            fontSize: 12,
+                            color: 'var(--text-dim)',
+                            background: 'transparent',
+                            border: '1px solid var(--field-border)',
+                            borderRadius: 8,
+                            cursor: 'pointer'
+                        }}
+                    >
+                        Forget everything
+                    </button>
+                </div>
+            )}
+        </div>
     )
 }

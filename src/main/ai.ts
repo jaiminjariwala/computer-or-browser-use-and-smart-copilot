@@ -1,3 +1,4 @@
+import { net } from 'electron'
 import OpenAI from 'openai'
 import type {
     ChatCompletionMessageParam,
@@ -93,9 +94,15 @@ export const TRANSCRIBE_MODEL = 'voxtral-mini-3b-2507'
 export const SUMMARY_SYSTEM_PROMPT = [
     'You maintain a condensed, running summary of a screen co-pilot session.',
     'Given the prior summary and additional conversation turns, return a JSON object',
-    'with "inferredIntent" (string) and "completedSteps" (array of strings).',
+    'with "inferredIntent" (string), "completedSteps" (array of strings), and',
+    '"userFacts" (array of strings).',
     'Preserve the previously inferred intent and all previously completed steps;',
-    'you may add new steps but must never drop existing ones.'
+    'you may add new steps but must never drop existing ones.',
+    '"userFacts" is for DURABLE facts or preferences about the user that would',
+    'still matter in a future, unrelated conversation (e.g. "prefers short answers",',
+    '"studies CS at GWU", "uses pnpm"). Include at most 3, only when clearly stated',
+    'by the user. Never include passwords, API keys, one-time codes, or anything',
+    'about the current task itself. Return [] when there is nothing durable.'
 ].join(' ')
 
 /** The conversation interface used by the rest of the app (design contract). */
@@ -191,6 +198,20 @@ function captureMessage(capture: TurnCapture): ChatCompletionMessageParam {
     return { role: 'user', content: captureParts(capture) }
 }
 
+/**
+ * Render persistent user memory as a system message. These are things the
+ * user EXPLICITLY told the assistant to keep ("remember ..."), so the model
+ * is told to apply them silently rather than recite them.
+ */
+export function formatMemories(memories: string[]): string {
+    const lines = memories.map((m) => `- ${m}`).join('\n')
+    return [
+        'Persistent user memory (facts and preferences the user explicitly asked you to keep).',
+        'Apply them when relevant; do not recite this list back unless asked:',
+        lines
+    ].join('\n')
+}
+
 /** True when the context's currentCapture is already the last recent turn. */
 function currentCaptureIsLastTurn(ctx: SessionContext): boolean {
     if (!ctx.currentCapture) return false
@@ -215,6 +236,11 @@ export function buildCompletionMessages(
     const messages: ChatCompletionMessageParam[] = [
         { role: 'system', content: systemPrompt },
         { role: 'system', content: formatSummary(ctx.summary) },
+        // Persistent user memory (explicitly saved facts/preferences) rides
+        // along as its own system message so every chat benefits from it.
+        ...(ctx.memories && ctx.memories.length > 0
+            ? [{ role: 'system' as const, content: formatMemories(ctx.memories) }]
+            : []),
         ...ctx.recentTurns.map(turnToMessage)
     ]
     if (ctx.currentCapture && !currentCaptureIsLastTurn(ctx)) {
@@ -249,6 +275,21 @@ export function buildSummaryRequestMessages(
 interface ParsedSummary {
     inferredIntent?: unknown
     completedSteps?: unknown
+    userFacts?: unknown
+}
+
+/**
+ * Extract the model's durable user facts from a summarize response: strings
+ * only, trimmed, non-empty, capped at 3 per pass (the memory store dedupes
+ * and enforces its own length/entry caps).
+ */
+export function extractUserFacts(parsed: ParsedSummary): string[] {
+    if (!Array.isArray(parsed.userFacts)) return []
+    return parsed.userFacts
+        .filter((f): f is string => typeof f === 'string')
+        .map((f) => f.trim())
+        .filter((f) => f.length >= 3)
+        .slice(0, 3)
 }
 
 /** Best-effort JSON extraction from a model response (tolerates code fences). */
@@ -298,6 +339,26 @@ export function mergeSummary(
         completedSteps: mergedSteps,
         updatedThroughTurnId: lastTurnId
     }
+}
+
+/**
+ * Dev-visible diagnostics for the fallback chain. Each tier's failure is
+ * otherwise swallowed by design (the chain moves on), which makes "why did my
+ * key not work" impossible to debug — so name the tier and the reason here.
+ * Never logs keys or request contents.
+ */
+function logProviderFailure(tier: string, err: unknown): void {
+    // Walk the cause chain: SDK errors like "Connection error." carry the real
+    // network reason (e.g. net::ERR_NETWORK_CHANGED) one or two causes down.
+    const parts: string[] = []
+    let current: unknown = err instanceof GlassErrorException ? (err as { cause?: unknown }).cause ?? err : err
+    for (let depth = 0; depth < 5 && current !== undefined && current !== null; depth++) {
+        const message =
+            current instanceof Error ? current.message : typeof current === 'string' ? current : String(current)
+        if (message && message !== parts[parts.length - 1]) parts.push(message)
+        current = current instanceof Error ? (current as { cause?: unknown }).cause : undefined
+    }
+    console.warn(`[ai] ${tier} failed: ${parts.join(' <- ') || 'unknown error'}`)
 }
 
 // --- Typed failures ---------------------------------------------------------
@@ -389,9 +450,53 @@ export interface ChatClient {
     }
 }
 
+/**
+ * Headers Chromium's network stack manages itself and REJECTS when set
+ * manually (`net::ERR_INVALID_ARGUMENT`). The OpenAI SDK sets some of these
+ * (e.g. content-length / accept-encoding), so they are stripped before the
+ * request is handed to `net.fetch` — exactly what a browser does.
+ */
+const CHROMIUM_MANAGED_HEADERS = new Set([
+    'accept-encoding',
+    'connection',
+    'content-length',
+    'expect',
+    'host',
+    'keep-alive',
+    'te',
+    'trailer',
+    'transfer-encoding',
+    'upgrade'
+])
+
+/** Wrap `net.fetch` so SDK-set forbidden headers can't invalidate requests. */
+function sanitizedChromiumFetch(netFetch: typeof fetch): typeof fetch {
+    return (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const headers = new Headers(init?.headers as HeadersInit | undefined)
+        for (const name of [...headers.keys()]) {
+            if (CHROMIUM_MANAGED_HEADERS.has(name.toLowerCase())) headers.delete(name)
+        }
+        return netFetch(input as never, { ...init, headers })
+    }) as typeof fetch
+}
+
+/**
+ * Chromium's network stack when available (Electron main), else Node's global
+ * fetch (unit tests). Node's undici fetch intermittently drops Gemini's
+ * responses mid-body ("Premature close"); Chromium's stack does not.
+ */
+const chromiumFetch: typeof fetch =
+    typeof net?.fetch === 'function'
+        ? sanitizedChromiumFetch(net.fetch.bind(net) as typeof fetch)
+        : fetch
+
 /** Default factory: a real `openai` client pointed at the gateway. */
 export function createGatewayClient(config: GatewayConfig, apiKey: string): ChatClient {
-    return new OpenAI({ baseURL: config.baseURL, apiKey }) as unknown as ChatClient
+    return new OpenAI({
+        baseURL: config.baseURL,
+        apiKey,
+        fetch: chromiumFetch as unknown as NonNullable<ConstructorParameters<typeof OpenAI>[0]>['fetch']
+    }) as unknown as ChatClient
 }
 
 export interface AIClientOptions {
@@ -405,16 +510,17 @@ export interface AIClientOptions {
     systemPrompt?: string
     /** Summarization instruction; defaults to {@link SUMMARY_SYSTEM_PROMPT}. */
     summaryPrompt?: string
-    /** Resolve the fallback gateway (e.g. local Ollama), or null if unset. */
-    getFallbackConfig?: () => Promise<{ baseURL: string; model: string } | null>
-    /** Resolve the fallback API key, or null (Ollama needs none). */
-    getFallbackApiKey?: () => Promise<string | null>
     /**
-     * Resolve the built-in free hosted fallback chain (OpenRouter, GLM, Gemini),
-     * tried in order after the primary + Ollama fallback. Each entry is a ready
-     * OpenAI-compatible endpoint with its stored key.
+     * Resolve the built-in free hosted providers (OpenRouter, Gemini), tried
+     * in order after the primary. Each entry is a ready OpenAI-compatible
+     * endpoint with its stored key.
      */
     getFallbackProviders?: () => Promise<Array<{ baseURL: string; model: string; apiKey: string }>>
+    /**
+     * Sink for durable user facts the summarize pass extracts (automatic
+     * memory). Absent = auto-capture off.
+     */
+    onUserFacts?: (facts: string[]) => void
 }
 
 /**
@@ -434,11 +540,10 @@ export class GatewayAIClient implements AIClient {
     private readonly createClient: (config: GatewayConfig, apiKey: string) => ChatClient
     private readonly systemPrompt: string
     private readonly summaryPrompt: string
-    private readonly getFallbackConfig?: () => Promise<{ baseURL: string; model: string } | null>
-    private readonly getFallbackApiKey?: () => Promise<string | null>
     private readonly getFallbackProviders?: () => Promise<
         Array<{ baseURL: string; model: string; apiKey: string }>
     >
+    private readonly onUserFacts?: (facts: string[]) => void
 
     constructor(options: AIClientOptions) {
         this.getConfig = options.getConfig
@@ -446,29 +551,14 @@ export class GatewayAIClient implements AIClient {
         this.createClient = options.createClient ?? createGatewayClient
         this.systemPrompt = options.systemPrompt ?? SYSTEM_PROMPT
         this.summaryPrompt = options.summaryPrompt ?? SUMMARY_SYSTEM_PROMPT
-        this.getFallbackConfig = options.getFallbackConfig
-        this.getFallbackApiKey = options.getFallbackApiKey
         this.getFallbackProviders = options.getFallbackProviders
-    }
-
-    /** Resolve the fallback client + model, or null when no fallback is set. */
-    private async resolveFallback(): Promise<{ client: ChatClient; model: string } | null> {
-        if (!this.getFallbackConfig) return null
-        const cfg = await this.getFallbackConfig()
-        if (!cfg || cfg.baseURL.trim().length === 0 || cfg.model.trim().length === 0) {
-            return null
-        }
-        const key = (this.getFallbackApiKey ? await this.getFallbackApiKey() : null) ?? 'local'
-        return {
-            client: this.createClient({ baseURL: cfg.baseURL, model: cfg.model }, key || 'local'),
-            model: cfg.model
-        }
+        this.onUserFacts = options.onUserFacts
     }
 
     /**
-     * Run a chat operation on the primary gateway; if it fails and a fallback
-     * gateway is configured (e.g. local Ollama), retry it there. The original
-     * (primary) error is surfaced if the fallback also fails.
+     * Run a chat operation on the primary gateway; if it fails, walk the free
+     * hosted providers (OpenRouter -> Gemini) until one answers. The original
+     * (primary) error is surfaced if every provider fails.
      */
     private async runWithFallback<T>(
         op: (client: ChatClient, model: string) => Promise<T>
@@ -479,27 +569,30 @@ export class GatewayAIClient implements AIClient {
                 return op(client, model)
             })
         } catch (primaryErr) {
-            // 1. The user's optional single fallback gateway (e.g. local Ollama).
-            const fb = await this.resolveFallback()
-            if (fb) {
-                try {
-                    return await this.run(() => op(fb.client, fb.model))
-                } catch {
-                    /* fall through to the hosted chain */
-                }
-            }
-            // 2. The built-in free hosted chain (OpenRouter -> GLM -> Gemini),
-            //    each tried in order until one answers.
+            logProviderFailure('primary gateway', primaryErr)
+            // The built-in free hosted providers (OpenRouter -> Gemini), each
+            // tried in order until one answers.
             const providers = this.getFallbackProviders ? await this.getFallbackProviders() : []
+            if (providers.length === 0) {
+                console.warn('[ai] no hosted fallback keys saved; skipping the hosted chain')
+            }
             for (const p of providers) {
-                try {
-                    const client = this.createClient(
-                        { baseURL: p.baseURL, model: p.model },
-                        p.apiKey || 'x'
-                    )
-                    return await this.run(() => op(client, p.model))
-                } catch {
-                    /* try the next hosted provider */
+                const client = this.createClient(
+                    { baseURL: p.baseURL, model: p.model },
+                    p.apiKey || 'x'
+                )
+                // Free-tier endpoints occasionally cut a response mid-body
+                // ("Premature close"); one immediate retry absorbs the blip
+                // before the chain writes the provider off.
+                for (let attempt = 1; attempt <= 2; attempt++) {
+                    try {
+                        return await this.run(() => op(client, p.model))
+                    } catch (err) {
+                        logProviderFailure(
+                            `hosted ${new URL(p.baseURL).hostname} (${p.model}, try ${attempt}/2)`,
+                            err
+                        )
+                    }
                 }
             }
             // Everything hosted failed -> surface the primary error so the
@@ -554,15 +647,22 @@ export class GatewayAIClient implements AIClient {
                 .create({ model, messages })
                 .then((result) => result.choices[0]?.message?.content ?? '')
         )
-        return mergeSummary(prev, parseSummaryResponse(content), turns)
+        const parsed = parseSummaryResponse(content)
+        // Automatic memory: the summarize pass (already running to fold older
+        // turns) doubles as the extractor for durable user facts, so learning
+        // about the user costs zero additional requests. The sink dedupes and
+        // every captured fact stays auditable/deletable in Settings -> Memory.
+        const facts = extractUserFacts(parsed)
+        if (facts.length > 0) this.onUserFacts?.(facts)
+        return mergeSummary(prev, parsed, turns)
     }
 
     /**
      * Transcribe recorded audio to text via the gateway's speech-capable model
      * (Voxtral). Audio is sent as an `input_audio` content part on the chat
      * completions endpoint (the gateway exposes no dedicated transcription
-     * endpoint). Uses the PRIMARY gateway only — the local fallback (Ollama)
-     * cannot handle audio — and overrides the model to {@link TRANSCRIBE_MODEL}.
+     * endpoint). Uses the PRIMARY gateway only and overrides the model to
+     * {@link TRANSCRIBE_MODEL}.
      */
     async transcribe(audioBase64: string, format = 'wav'): Promise<string> {
         return this.run(async () => {

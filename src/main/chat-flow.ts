@@ -87,20 +87,38 @@ export interface ChatFlowEmitters {
      */
     credentialsRequired?: () => void
     /**
-     * The gateway (and its configured fallback) failed. When wired, the context
-     * is handed to a zero-config local fallback model that runs in the renderer;
-     * it answers and reports back via `chat:fallback-result`, so the request
-     * stays pending until then. When absent, the failure surfaces as an error.
-     * `originId` is the session the request started in, so the fallback answer
-     * lands in the right chat even if the user has since switched.
+     * Every provider in the chain failed (or none is configured). When wired,
+     * the owner decides what the user sees — e.g. an in-chat setup card on a
+     * fresh install, or an error turn in the origin chat — and settles the
+     * request via {@link ChatFlow.settleRequest} when done. When absent, the
+     * failure surfaces as an error banner and settles immediately. `originId`
+     * is the session the request started in; `requestId` is the asking user
+     * turn's id.
      */
-    fallbackNeeded?: (ctx: SessionContext, originId: string) => void
+    providersExhausted?: (ctx: SessionContext, originId: string, requestId: string) => void
+    /**
+     * `request:started` — a question began processing. `requestId` is the id of
+     * the user turn that asked it, so the UI can show a per-question thinking
+     * indicator (and a cancel affordance) next to that exact message.
+     */
+    requestStarted?: (requestId: string) => void
+    /** `request:settled` — that question finished (answered, failed, or cancelled). */
+    requestSettled?: (requestId: string) => void
+}
+
+/** Persistent user memory seam (optional; absent = feature off). */
+export interface ChatFlowMemories {
+    /** Memory texts to fold into request context (oldest first). */
+    list: () => Promise<string[]>
+    /** Deterministically capture a "remember ..." command from a message. */
+    captureFromMessage: (text: string) => Promise<void>
 }
 
 export interface ChatFlowDeps {
     session: ChatFlowSession
     ai: ChatFlowAI
     emitters: ChatFlowEmitters
+    memories?: ChatFlowMemories
 }
 
 /**
@@ -114,11 +132,63 @@ export class ChatFlow {
     private readonly session: ChatFlowSession
     private readonly ai: ChatFlowAI
     private readonly emitters: ChatFlowEmitters
+    private readonly memories?: ChatFlowMemories
+    /**
+     * Questions currently being processed, keyed by the asking user turn's id.
+     * Several may be in flight at once: asking a new question NEVER supersedes
+     * an earlier one — each request runs to completion and delivers its own
+     * answer. `pending` is on while ANY request is in flight.
+     */
+    private readonly inFlight = new Map<string, string>()
+    /** Requests the user cancelled; their late answers are dropped on arrival. */
+    private readonly cancelled = new Set<string>()
 
     constructor(deps: ChatFlowDeps) {
         this.session = deps.session
         this.ai = deps.ai
         this.emitters = deps.emitters
+        this.memories = deps.memories
+    }
+
+    /**
+     * The session context enriched with persistent memory. Memory read
+     * failures degrade to a memory-less request — never a blocked chat.
+     */
+    private async contextWithMemories(): Promise<SessionContext> {
+        const ctx = this.session.buildContext()
+        if (!this.memories) return ctx
+        const memories = await this.memories.list().catch(() => [])
+        return memories.length > 0 ? { ...ctx, memories } : ctx
+    }
+
+    /** Begin tracking a question; first in-flight request turns pending on. */
+    private begin(requestId: string, originId: string): void {
+        if (this.inFlight.size === 0) this.emitters.pending(true)
+        this.inFlight.set(requestId, originId)
+        this.emitters.requestStarted?.(requestId)
+    }
+
+    /** Stop tracking a question; last one out turns pending off. */
+    private finish(requestId: string): void {
+        if (!this.inFlight.delete(requestId)) return
+        this.emitters.requestSettled?.(requestId)
+        if (this.inFlight.size === 0) this.emitters.pending(false)
+    }
+
+    /**
+     * Cancel a still-thinking question (by its user-turn id). The underlying
+     * provider call keeps running, but its answer is discarded on arrival and
+     * the question's thinking state clears immediately.
+     */
+    cancelRequest(requestId: string): void {
+        if (!this.inFlight.has(requestId)) return
+        this.cancelled.add(requestId)
+        this.finish(requestId)
+    }
+
+    /** Consume a cancellation mark. True when this answer should be dropped. */
+    private consumeCancelled(requestId: string): boolean {
+        return this.cancelled.delete(requestId)
     }
 
     /**
@@ -140,31 +210,63 @@ export class ChatFlow {
         const userTurn = this.session.appendUserText(trimmed)
         this.emitters.turnAppended(userTurn)
 
+        // 1b. "remember ..." messages are ALSO a durable memory write. The
+        //     write happens before the model call so the fact survives even a
+        //     failed request; the model still sees the message and replies.
+        await this.memories?.captureFromMessage(trimmed).catch(() => undefined)
+
         // 2. Build context AFTER the user turn is recorded, so the request
         //    includes the just-typed message (Req 3.1). Capture the origin chat
         //    so a slow answer lands here even if the user switches chats.
         const originId = this.originId()
-        const ctx = this.session.buildContext()
+        const ctx = await this.contextWithMemories()
 
-        // 3. Enter the in-progress state (Req 5.3).
-        this.emitters.pending(true)
+        // 3–5. Run the question as an independently tracked request.
+        await this.runRequest(userTurn.id, originId, ctx)
+    }
+
+    /**
+     * Run one question end-to-end: track it (per-question thinking state +
+     * shared pending), ask the gateway, deliver the answer (or hand off to the
+     * local fallback / surface the error), and settle. Concurrent calls each
+     * deliver their own answer — a new question never supersedes an earlier
+     * one — and a cancelled question's late answer is dropped on arrival.
+     */
+    private async runRequest(
+        requestId: string,
+        originId: string,
+        ctx: SessionContext
+    ): Promise<void> {
+        this.begin(requestId, originId)
         try {
-            // 4. Ask the gateway for the next step (Req 5.1).
             const guidance = await this.ai.complete(ctx)
-
-            // 5. Deliver the answer to the origin chat (Req 5.2).
-            await this.completeWith(guidance, originId)
-        } catch (err) {
-            // Gateway failed. When a local fallback is wired, hand it the context
-            // (the renderer answers and reports back) and keep the request
-            // pending; otherwise surface the typed error and clear pending.
-            if (this.emitters.fallbackNeeded) {
-                this.emitters.fallbackNeeded(ctx, originId)
-                return
+            if (!this.consumeCancelled(requestId)) {
+                await this.completeWith(guidance, originId)
             }
-            this.surfaceError(err)
-            this.emitters.pending(false)
+        } catch (err) {
+            if (!this.consumeCancelled(requestId)) {
+                // Every provider failed. When the exhaustion handler is wired
+                // it owns the user-facing outcome (setup card / error turn)
+                // and settles the request itself; otherwise surface the typed
+                // error and settle now.
+                if (this.emitters.providersExhausted) {
+                    this.emitters.providersExhausted(ctx, originId, requestId)
+                    return
+                }
+                this.surfaceError(err)
+            }
         }
+        this.finish(requestId)
+    }
+
+    /** True (and consumed) when this request was cancelled — drop its result. */
+    wasCancelled(requestId: string): boolean {
+        return this.consumeCancelled(requestId)
+    }
+
+    /** Settle a request that completed outside {@link runRequest} (fallback path). */
+    settleRequest(requestId: string): void {
+        this.finish(requestId)
     }
 
     /**
@@ -210,24 +312,8 @@ export class ChatFlow {
         const originId = this.originId()
         const ctx = this.session.buildContext(capture)
 
-        // 3. Enter the in-progress state (Req 5.3).
-        this.emitters.pending(true)
-        try {
-            // 4. Ask the gateway for the next step grounded in image + context.
-            const guidance = await this.ai.complete(ctx)
-
-            // 5. Deliver the answer to the origin chat (Req 5.2).
-            await this.completeWith(guidance, originId)
-        } catch (err) {
-            // Gateway failed: hand off to the local fallback when wired (keeps
-            // the capture, keeps pending); otherwise surface the error.
-            if (this.emitters.fallbackNeeded) {
-                this.emitters.fallbackNeeded(ctx, originId)
-                return
-            }
-            this.surfaceError(err)
-            this.emitters.pending(false)
-        }
+        // 3–5. Run the question as an independently tracked request.
+        await this.runRequest(captureTurn.id, originId, ctx)
     }
 
     /**
@@ -257,20 +343,9 @@ export class ChatFlow {
         // The captures live on the just-appended turn, so buildContext() (which
         // includes it in recentTurns) already carries every image to the gateway.
         const originId = this.originId()
-        const ctx = this.session.buildContext()
+        const ctx = await this.contextWithMemories()
 
-        this.emitters.pending(true)
-        try {
-            const guidance = await this.ai.complete(ctx)
-            await this.completeWith(guidance, originId)
-        } catch (err) {
-            if (this.emitters.fallbackNeeded) {
-                this.emitters.fallbackNeeded(ctx, originId)
-                return
-            }
-            this.surfaceError(err)
-            this.emitters.pending(false)
-        }
+        await this.runRequest(captureTurn.id, originId, ctx)
     }
 
     /** The origin session id for a request (empty when the manager can't say). */
@@ -291,7 +366,7 @@ export class ChatFlow {
         }
         const assistantTurn = this.session.appendAssistantText(guidance)
         this.emitters.turnAppended(assistantTurn)
-        this.emitters.pending(false)
+        // Pending clears in runRequest's finish() once no request remains.
     }
 
     /**

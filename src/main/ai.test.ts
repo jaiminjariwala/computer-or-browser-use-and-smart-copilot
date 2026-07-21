@@ -13,6 +13,7 @@ import {
     turnToMessage,
     buildCompletionMessages,
     buildSummaryRequestMessages,
+    extractUserFacts,
     mergeSummary,
     GatewayAIClient,
     GlassErrorException,
@@ -204,6 +205,40 @@ describe('buildCompletionMessages', () => {
         expect(messages[1].content).toContain('goal')
         expect(messages[2]).toEqual({ role: 'user', content: 'hi' })
         expect(messages[3]).toEqual({ role: 'assistant', content: 'hello' })
+    })
+
+    it('folds persistent memories in as a system message after the summary', () => {
+        const ctx: SessionContext = {
+            summary: emptySummary,
+            recentTurns: [userTurn('t1', 'hi')],
+            memories: ['I prefer short answers', 'my timezone is PT']
+        }
+        const messages = buildCompletionMessages(ctx)
+        expect(messages[2]?.role).toBe('system')
+        expect(messages[2]?.content).toContain('I prefer short answers')
+        expect(messages[2]?.content).toContain('my timezone is PT')
+        expect(messages[3]).toEqual({ role: 'user', content: 'hi' })
+    })
+
+    it('extractUserFacts keeps at most 3 clean string facts', () => {
+        expect(
+            extractUserFacts({
+                userFacts: ['  prefers short answers ', 42, 'uses pnpm', '', 'x', 'lives in Seattle', 'a fourth fact']
+            })
+        ).toEqual(['prefers short answers', 'uses pnpm', 'lives in Seattle'])
+        expect(extractUserFacts({})).toEqual([])
+        expect(extractUserFacts({ userFacts: 'not-an-array' })).toEqual([])
+    })
+
+    it('omits the memory message when there are no memories', () => {
+        const ctx: SessionContext = {
+            summary: emptySummary,
+            recentTurns: [userTurn('t1', 'hi')],
+            memories: []
+        }
+        const messages = buildCompletionMessages(ctx)
+        expect(messages).toHaveLength(3)
+        expect(messages[2]).toEqual({ role: 'user', content: 'hi' })
     })
 
     it('appends currentCapture as a final user image message', () => {
