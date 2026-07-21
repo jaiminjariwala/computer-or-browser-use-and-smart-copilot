@@ -216,12 +216,24 @@ export class SessionStore {
         await fs.rename(temp, target)
     }
 
-    /** Derive a short, human-readable title for a session. */
+    /**
+     * Derive a short, human-readable title for a session. Mirrors the
+     * renderer's live rule: the LATEST user question names the chat, so
+     * archived rows agree with what the rail showed while the chat was open.
+     */
     private titleFor(session: Session): string {
-        const firstUserText = session.turns.find(
-            (t) => t.role === 'user' && typeof t.text === 'string' && t.text.trim().length > 0
-        )?.text
-        const raw = firstUserText ?? session.summary.inferredIntent
+        let latestUserText: string | undefined
+        for (let i = session.turns.length - 1; i >= 0; i--) {
+            const t = session.turns[i]
+            if (t.role === 'user' && typeof t.text === 'string' && t.text.trim().length > 0) {
+                latestUserText = t.text
+                break
+            }
+        }
+        // A parked empty chat keeps reading "New chat" in the rail, exactly
+        // like its pill did while it was open.
+        if (session.turns.length === 0) return 'New chat'
+        const raw = latestUserText ?? session.summary.inferredIntent
         const trimmed = (raw ?? '').trim()
         if (trimmed.length === 0) {
             return session.turns.some((t) => t.capture) ? 'Screen capture chat' : 'Untitled chat'
@@ -257,6 +269,10 @@ export class SessionStore {
      * files), tolerating corrupt entries by skipping them.
      */
     async listSessions(): Promise<SessionListItem[]> {
+        // Settle queued archive/save writes first so a list issued right after
+        // archiving (e.g. the renderer's refresh on New chat) always sees the
+        // just-archived session instead of racing the rename.
+        await this.flush()
         let files: string[]
         try {
             files = await fs.readdir(this.sessionsDir)

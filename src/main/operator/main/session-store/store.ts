@@ -176,8 +176,21 @@ export class SessionStore {
      * `limit` is supplied (the memory path), rank archive filenames by lightweight
      * filesystem metadata and decode at most that many full session bodies.
      * Corrupt entries are skipped.
+     *
+     * `includeCurrent` additionally lists the persisted ACTIVE session
+     * (`current.json`), deduped by id against its archive. The sidebar needs
+     * this: the active task is only synthesized into the rail while the
+     * renderer holds its id, so after "New task" clears the workspace the
+     * still-unarchived previous task would otherwise vanish from history.
+     * The memory-recall path never sets it (prior sessions only).
      */
-    async listSessions(limit?: number): Promise<SessionListItem[]> {
+    async listSessions(
+        limit?: number,
+        opts?: { includeCurrent?: boolean }
+    ): Promise<SessionListItem[]> {
+        // Settle queued archive/save writes so a list issued right after a
+        // session swap can never race the rename and miss a task.
+        await this.writeChain.catch(() => undefined)
         let files: string[]
         try {
             files = (await this.fs.readdir(this.sessionsDir)).filter(
@@ -227,6 +240,18 @@ export class SessionStore {
                 })
             } catch {
                 // Skip corrupt/foreign files.
+            }
+        }
+        if (opts?.includeCurrent) {
+            const current = await this.load()
+            if (current !== null && !items.some((item) => item.id === current.id)) {
+                items.push({
+                    id: current.id,
+                    goalText: this.titleFor(current),
+                    status: current.status,
+                    createdAt: current.createdAt,
+                    updatedAt: current.updatedAt
+                })
             }
         }
         items.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))

@@ -274,6 +274,16 @@ describe('SessionStore', () => {
             ).rejects.toMatchObject({ code: 'ENOENT' })
         })
 
+        it('lists a session immediately after an un-awaited archive (New chat race)', async () => {
+            // Regression: clicking New chat archived fire-and-forget, and the
+            // renderer's immediate history refresh could read the directory
+            // before the rename landed — the just-archived chat vanished from
+            // the rail. listSessions must settle queued writes first.
+            void store.archive(makeSession({ id: 'race-archive' }))
+            const items = await store.listSessions()
+            expect(items.map((i) => i.id)).toContain('race-archive')
+        })
+
         it('snapshots the session at archive time, ignoring later mutation', async () => {
             const session = makeSession({ id: 'snap-archive' })
             const pending = store.archive(session)
