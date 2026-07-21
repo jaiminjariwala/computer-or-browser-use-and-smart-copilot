@@ -14,7 +14,9 @@ Version numbers are the installed major families from `package.json`.
   │ Copilot AI     OpenAI-compatible client + local fallback     │
   │ Operator AI    typed provider chain + deterministic loop     │
   │ Browser use    Playwright 1.61 + DOM-first Chromium          │
-  │ Voice/local AI transformers.js (Whisper/Moonshine/SmolVLM)   │
+  │ Voice (local)  transformers.js Whisper dictation             │
+  │ Video frames   MediaRecorder + canvas sampling (≤12 JPEG)    │
+  │ GitHub auth    OAuth Device Flow + safeStorage token         │
   │ Tests          Vitest 4 + fast-check 4                       │
   │ Agent evals    tsx 4.20.6 + scripted deterministic seams     │
   └──────────────────────────────────────────────────────────────┘
@@ -36,9 +38,10 @@ Version numbers are the installed major families from `package.json`.
 | **React 18** | Sidebar chat, capture overlay, activity view, settings, and indicator UI. | Component state maps cleanly to the app's independent conversations and panels. |
 | **Monaco Editor 0.52** | Readable code-view panels in chat. | Syntax highlighting, familiar editor behavior, and large-document handling without building an editor from scratch. |
 | **react-markdown + remark-gfm** | Renders assistant answers and operator explanations as Markdown. | Keeps model output readable while user text remains plain. |
-| **framer-motion 11** | Focused UI transitions. | Declarative motion without owning animation lifecycle code. |
+
 | **@fontsource-variable/inter** | Self-hosted UI typography. | Consistent rendering offline and under the renderer CSP. |
 | **pdfjs-dist 6** | Rasterizes attached PDF pages into image cards. | Vision models receive page images rather than unsupported raw PDF bytes. |
+| **MediaRecorder + canvas video→frame sampling** | Records camera video in the sidebar and converts local video attachments into at most 12 downscaled (≤1280px) JPEG frames with sequence/timestamp metadata. | Vision providers receive a bounded chronological image sequence instead of raw video bytes, so any image-capable model can read a video and the original file never leaves the machine. |
 
 ## AI and reasoning
 
@@ -63,7 +66,7 @@ The two app modes share provider concepts but produce different outputs.
 | **Tolerant action parser** | Normalizes common model variations into the fixed `Action` union. | Valid intent is not discarded solely because a provider formatted coordinates or key chords differently. |
 | **Deterministic trajectory summaries** | Rebuild successful progress from static action categories without another model call. | Avoids extra latency and cost while excluding rationales, typed values, coordinates, and free-form result prose. |
 | **Bounded local session memory** | Recalls sanitized summaries from up to three related completed sessions. | Reuses useful approaches under a generic prior-task label without replaying screenshots, typed values, coordinates, raw goals, or full trajectories. |
-| **transformers.js models** | Local SmolVLM/SmolLM2 fallback and on-device speech recognition. | Supplies a zero-key, local path after initial model download. |
+| **transformers.js (Whisper)** | On-device speech recognition for dictation. | Voice input works locally with no key and no audio leaving the machine. |
 
 ## Browser and computer environments
 
@@ -80,14 +83,15 @@ The two app modes share provider concepts but produce different outputs.
 
 | Tech | Role | Why this one |
 | --- | --- | --- |
-| **@huggingface/transformers 3** and **@xenova/transformers 2** | Run speech and local vision/text models in renderer workers using WASM/WebGPU. | Audio and local-fallback screenshots can stay on the machine. |
-| **Whisper base / Moonshine base** | Two selectable dictation engines. | Gives a quality/speed choice while retaining local processing. |
+| **@huggingface/transformers 3** | Runs Whisper in a renderer worker using WebGPU (WASM fallback) — the app's single transformers stack. | Dictated audio stays on the machine, and only one ONNX runtime ships in the bundle. |
+| **Whisper base (WebGPU)** | The single dictation engine. | Reliable local transcription; the faster Moonshine variant was dropped because it hallucinated. |
 
 ## Persistence and security
 
 | Tech | Role | Why this one |
 | --- | --- | --- |
 | **Electron safeStorage** | Encrypts provider secrets with the OS keychain. | Credentials are not persisted as plain text. |
+| **GitHub OAuth Device Flow** | Signs the user in from the sidebar footer via a short code confirmed in the system browser. | Needs no bundled client secret and no embedded login page; the safeStorage-encrypted access token stays in the main process and never crosses the preload bridge. |
 | **JSON under Electron `userData`** | Stores sessions and non-secret configuration. | Simple, inspectable records with atomic persistence. |
 | **Renderer `sessionStorage`** | Keeps up to five recent editable goals for the current renderer session. | Avoids durable copies, skips common sensitive markers, and clears with operator-history deletion. |
 | **contextIsolation + preload bridges** | Exposes typed `window.glass` and `window.operator` APIs. | Renderers never receive unrestricted Node or system access. |

@@ -42,31 +42,27 @@ known-good flow. The app imports exactly one; rolling back is a one-line change.
 
 | Version | Model | Backend | Notes |
 | --- | --- | --- | --- |
-| `voice-lib` (v1) | Whisper tiny.en | WASM (CPU), @xenova v2 | first known-good baseline |
-| `voice-lib-v2` | Whisper base.en | WebGPU → WASM, @huggingface v3 | faster + more accurate |
-| **`voice-lib-v3`** (current) | **Moonshine base** | **WebGPU → WASM, @huggingface v3** | **fastest + precise for real-time; no 30s padding** |
+| ~~`voice-lib` (v1)~~ (engine removed) | Whisper tiny.en | WASM (CPU), @xenova v2 | first known-good baseline; engine deleted once every window ran v2 — shipping two transformers stacks doubled the bundled ONNX runtime (~25 MB). The folder now holds only the shared `VoiceBars` glyph. |
+| **`voice-lib-v2`** (current) | **Whisper base.en** | **WebGPU → WASM, @huggingface v3** | **the single engine, used by the sidebar AND the capture overlay** |
+| ~~`voice-lib-v3`~~ (removed) | Moonshine base | WebGPU → WASM | was faster, but hallucinated words too often to trust — deleted |
 
-Why Moonshine (v3): it's an encoder-decoder ASR model built for real-time, using
-rotary position embeddings so it handles variable-length audio without Whisper's
-fixed 30s window — our short interim clips transcribe much faster, and it beats
-Whisper-tiny on accuracy.
+Why Whisper base won: Moonshine was quicker on short clips, but it invented
+words the user never said. For dictation, a wrong transcript is worse than a
+slow one, so the reliable engine is the only one shipped — and the in-composer
+V1/V2 engine picker is gone; the mic is just a mic now.
 
-Switching versions is a one-line import change in `src/renderer/sidebar/App.tsx`:
-`../voice-lib-v3` ⇄ `../voice-lib-v2` ⇄ `../voice-lib`. **Rule: never edit an
-existing version to experiment** — add a new one. See
+**Rule: never edit an existing version to experiment** — add a new
+`voice-lib-vN` folder and switch the import. See
 `src/renderer/voice-lib/README.md`.
 
 ### File map
 
 ```
-renderer/voice-lib/            (v1, frozen — Whisper tiny / WASM)
-├─ asr.worker.ts   useDictation.ts   useSmoothDictation.ts   VoiceUI.tsx   index.ts
+renderer/voice-lib/            (shared UI only — engine removed)
+├─ VoiceUI.tsx (VoiceBars, CSS-animated)   index.ts
 
-renderer/voice-lib-v2/         (frozen — Whisper base / WebGPU)
-├─ asr.worker.ts   useSmoothDictation.ts   index.ts
-
-renderer/voice-lib-v3/         (current — Moonshine base / WebGPU)
-├─ asr.worker.ts               # Moonshine, WebGPU → falls back to WASM
+renderer/voice-lib-v2/         (current — Whisper base / WebGPU)
+├─ asr.worker.ts               # Whisper, WebGPU → falls back to WASM
 ├─ useSmoothDictation.ts       # capture + worker + reveal + cancel, self-contained
 └─ index.ts
 ```

@@ -48,10 +48,12 @@ screenshots for other apps are never hijacked):
 The shot appears as a thumbnail in a carousel above the input, so you can stack
 several and send them together. You can also:
 
-- **Drag** an image or a screenshot file (e.g. from the Desktop) anywhere onto the
-  app.
-- Use the **paperclip** button to attach images or a PDF (PDFs are rasterized
-  page-by-page).
+- **Drag** an image, a screenshot file, or a **video** (mp4/m4v/mov/webm/ogv)
+  anywhere onto the app.
+- Use the **paperclip** button and pick **Files** to attach images, a PDF
+  (rasterized page-by-page), or a video file — or pick **Camera** to record a
+  short video with your device's camera; it lands in the same carousel as a
+  playable preview while frames are sampled for the AI.
 
 ## What it does
 
@@ -59,12 +61,17 @@ several and send them together. You can also:
   shortcuts above.
 - **Stages before sending** — captures and attachments collect in a carousel
   above the input so you can send several at once.
-- **Answers by text or voice** — type, or tap the mic and talk (on-device, live;
-  two engines selectable from the voice pill).
+- **Understands short videos** — attach or record a video and it is sampled
+  into at most 12 chronological frames the vision model can read (up to 2
+  videos per message, 250 MB each). The raw video never leaves your Mac; only
+  the sampled frames are sent.
+- **Answers by text or voice** — type, or tap the mic and talk (on-device
+  Whisper dictation, live).
 - **Routes automatically** — a command runs the agent; a question is answered by
   the copilot. No manual mode-flipping needed.
-- **Never fully stops** — a fallback chain (free hosted models, then on-device
-  models) answers even with no network key. See [Fallback chain](./docs/FALLBACK.md).
+- **Zero-friction first run** — with no key configured, the first question
+  answers with an in-chat setup card: paste one free key (Gemini or OpenRouter)
+  right there. See [Fallback chain](./docs/FALLBACK.md).
 - **Drives a real browser through its DOM** — Browser Use operates a
   Playwright-controlled Chromium using page text, links, buttons, and fields
   instead of relying on pixel guesses.
@@ -128,23 +135,21 @@ several and send them together. You can also:
 **Permissions:** Browser Use needs no special macOS permission. Compute Use (My
 Mac) needs both **Screen Recording** and **Accessibility** (to synthesize input);
 the app opens the exact System Settings pane when they are missing. Voice needs
-**Microphone**. See [Setup](./docs/SETUP.md).
+**Microphone**; the in-app video recorder needs **Camera** (and uses the
+microphone for the recording's audio when allowed). See [Setup](./docs/SETUP.md).
 
 ## Providers and keys (free options)
 
-The app runs on your OpenAI-compatible endpoint, free hosted models, or local
-on-device models. Paste any of these free keys once in Settings and they are used
-automatically:
+The app runs on your own OpenAI-compatible endpoint (corporate or personal) or
+a free hosted key. Paste either free key once — in Settings, or directly in the
+in-chat setup card that appears on your first question:
 
 - **Google Gemini** (`gemini-2.5-flash`) — recommended free vision and
-  tool-calling option. Key: aistudio.google.com/apikey
+  tool-calling option. Key: aistudio.google.com/app/apikey
 - **OpenRouter** (`openrouter/free` router) — auto-selects a free model. Key:
-  openrouter.ai/keys
-- **Zhipu GLM** (`glm-4v-flash`) — free vision model.
+  openrouter.ai/settings/keys
 
-On-device fallback (zero config): SmolVLM for screenshots and SmolLM2 for
-text-only questions, so Smart Copilot answers even fully offline after a one-time
-model download. See [Fallback chain](./docs/FALLBACK.md) and
+See [Fallback chain](./docs/FALLBACK.md) and
 [AI gateway & models](./docs/AI-GATEWAY.md).
 
 ## GitHub account (optional)
@@ -168,24 +173,25 @@ described in [Development & packaging](./docs/DEVELOPMENT.md#github-oauth-device
    xattr -cr "/Applications/Computer or Browser Use and Smart Copilot.app"
    ```
 4. Allow **Screen Recording** and, for Compute Use, **Accessibility** in System
-   Settings -> Privacy & Security; **Microphone** for voice.
+   Settings -> Privacy & Security; **Microphone** for voice; **Camera** if you
+   use the in-app video recorder.
 
-Smart Copilot answers with the on-device fallback even with no key, so you can try
-it immediately. For best quality add a free key (above). Browser Use runs on
-Playwright's Chromium in development; see [Setup](./docs/SETUP.md).
+On first run, Smart Copilot walks you through pasting a free key directly in
+the chat — about a minute of setup (above). Browser Use runs on Playwright's
+Chromium in development; see [Setup](./docs/SETUP.md).
 
 ## Documentation
 
 | Doc | What's inside |
 | --- | --- |
 | [Setup](./docs/SETUP.md) | Install, configure keys, permissions, and run both modes. Start here. |
-| [How it works](./docs/HOW-IT-WORKS.md) | Plain-language walkthrough of Smart Copilot with flow diagrams. |
+| [How it works](./docs/HOW-IT-WORKS.md) | Plain-language, analogy-driven walkthrough of the whole app, with diagrams. |
 | [Operator engine](./docs/OPERATOR.md) | Agent loop, memory, browser tabs, form safety, environments, and evaluations. |
 | [Architecture](./docs/ARCHITECTURE.md) | Electron processes, windows, IPC, source layout, and evaluation seams. |
 | [Tech stack](./docs/TECH-STACK.md) | Every technology used and why. |
 | [IPC channels](./docs/IPC-CHANNELS.md) | The full main <-> renderer channel map. |
 | [Safety model](./docs/SAFETY.md) | Autonomy levels, the safety gate, the kill switch, the in-control indicator. |
-| [Fallback chain](./docs/FALLBACK.md) | Your provider -> free hosted models -> on-device, so answers never fully stop. |
+| [Fallback chain](./docs/FALLBACK.md) | Your provider -> free hosted keys, plus the in-chat first-run setup card. |
 | [Sandbox container](./docs/SANDBOX-CONTAINER.md) | The optional Docker Linux desktop and noVNC live view. |
 | [Voice dictation](./docs/VOICE.md) | On-device speech-to-text: the worker, the engines, tuning. |
 | [AI gateway & models](./docs/AI-GATEWAY.md) | OpenAI-compatible providers, credentials, and model choice. |
@@ -210,7 +216,10 @@ metrics and full validation sequence.
 ---
 
 Personal R&D project. Tech: Electron + electron-vite + React + TypeScript;
-Monaco Editor for code viewing; on-device Whisper/Moonshine + SmolVLM/SmolLM2
-(transformers.js) for voice and offline fallback; OpenAI-compatible provider
-clients; Playwright-driven Chromium for DOM-based browser use; and an optional
-Dockerized Linux desktop for sandboxed experiments.
+Monaco Editor for code viewing; on-device Whisper (transformers.js) for
+dictation; a MediaRecorder + canvas
+pipeline that turns local video attachments into bounded JPEG frame sequences
+for vision models; OpenAI-compatible provider clients; GitHub OAuth Device Flow
+with a safeStorage-encrypted token kept in the main process; Playwright-driven
+Chromium for DOM-based browser use; and an optional Dockerized Linux desktop
+for sandboxed experiments.

@@ -6,52 +6,46 @@ an API key when that provider needs one.
 
 ## Request path
 
-If one tier fails, the next tier is tried. The final fallback runs locally.
+If one tier fails, the next tier is tried.
 
 ```text
-  Click app (image + question + memory)
+  Chat request (images + question + running summary)
         |
         v
-  1. Primary OpenAI-compatible provider
+  1. Your own endpoint (corporate gateway / paid / local server)
         | fails / not set
         v
-  2. Optional local gateway, such as Ollama
-        | fails / not set
+  2. Free hosted keys, pasted once:
+        OpenRouter -> Google Gemini
+        | all fail
         v
-  3. Free hosted chain, keyed once in Settings:
-        Google Gemini -> Zhipu GLM -> OpenRouter
-        | all fail / no keys
-        v
-  4. On-device SmolVLM
-        no key, local renderer worker
+  Nothing configured -> in-chat setup card (paste a free key right there)
+  Keys exist but down -> short error turn in the origin chat
 ```
 
-- **Primary + hosted providers** live in the main process. `ai.ts` builds the
-  chat request and `runWithFallback()` tries each configured provider in order.
-- **On-device fallback** runs in the renderer. When every network provider
-  fails, the main process emits `chat:fallback`; the renderer runs SmolVLM and
-  returns `chat:fallback-result`.
+All providers live in the main process: `ai.ts` builds the chat request and
+`runWithFallback()` tries each configured provider in order, giving hosted
+providers one immediate retry for transient drops.
 
 ## Settings
 
-`Settings` stores non-secret config in `config.json`; keys are encrypted with
-Electron `safeStorage` and kept out of the JSON file.
+Settings stores non-secret config in `config.json`; keys are encrypted with
+Electron `safeStorage` and kept out of the JSON file. The form has exactly two
+sections:
 
-- **Primary**: any OpenAI-compatible base URL, model, and optional key.
-- **Fallback gateway**: usually local Ollama at `http://localhost:11434/v1`.
-- **Free hosted models**: Google Gemini, Zhipu GLM, and OpenRouter. Paste a key
-  once and that provider joins the chain automatically.
+- **Free keys**: Google Gemini and OpenRouter. Paste a key once and that
+  provider joins the chain automatically.
+- **Your own AI (company or personal)**: any OpenAI-compatible base URL, model,
+  and key. When set, it is always tried first.
 
 Default hosted models:
 
 | Provider | Default model |
 | --- | --- |
-| Gemini | `gemini-2.5-flash` |
-| GLM | `glm-4v-flash` |
 | OpenRouter | `openrouter/free` |
+| Gemini | `gemini-2.5-flash` |
 
-Hosted providers receive screenshots you send through them. The on-device tier
-keeps screenshots local.
+Hosted providers receive the screenshots/frames you send through them.
 
 ## Choosing a model
 

@@ -82,7 +82,11 @@ hosted keys you already saved.
 | --- | --- | --- |
 | Screen Recording | Copilot capture, and operator in **My Mac** mode | First capture / first local run |
 | Accessibility | Operator input synthesis in **My Mac** mode | First local run |
-| Microphone | Voice dictation | First time you tap the mic |
+| Microphone | Voice dictation, and audio in videos you record in-app | First time you tap the mic |
+| Camera | Recording a video attachment with the camera button | First time you open the video recorder |
+
+If you deny the microphone but allow the camera, the recorder still works: it
+retries camera-only and records a video without an audio track.
 
 Grant them in System Settings -> Privacy & Security. The **Sandboxed browser**
 environment needs none of these, because it never touches your real desktop.

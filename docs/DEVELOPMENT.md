@@ -123,7 +123,12 @@ Notes:
 - Builds are **unsigned** by default (`mac.identity: null`) for personal/local
   use. Public distribution should use a Developer ID identity and notarization.
 - Hardened Runtime is enabled with `build/entitlements.mac.plist`, including the
-  microphone `audio-input` entitlement for voice dictation.
+  microphone `audio-input` entitlement for voice dictation and the
+  `com.apple.security.device.camera` entitlement for the in-app video recorder.
+- `electron-builder.yml` declares both usage strings under `mac.extendInfo`:
+  `NSCameraUsageDescription` (shown the first time the video recorder opens)
+  and `NSMicrophoneUsageDescription` (covers voice dictation and, when allowed,
+  the audio track of videos you record).
 
 ## Local stable-signing deploy loop
 
@@ -185,11 +190,8 @@ Spaces and therefore remain manual.
 - [ ] Correct the field and confirm a valid form can proceed under the selected
   autonomy policy.
 
-### 5. Templates and activity privacy
+### 5. Activity privacy
 
-- [ ] Selecting a built-in template fills the composer and selects its environment
-  but does not auto-start.
-- [ ] A submitted goal appears in Recent; no more than five are retained.
 - [ ] Activity rows show semantic actions, failures, and API/Vision mode without
   typed values or raw coordinates.
 
@@ -201,7 +203,22 @@ Spaces and therefore remain manual.
 - [ ] Recalled context does not contain screenshots, raw observations,
   coordinates, or typed action values.
 
-### 7. Window and voice behavior
+### 7. Video attachments and the camera recorder
+
+- [ ] Attach an `.mp4`, `.mov`, and `.webm` via paperclip → **Files** (or
+  drag&drop); each shows a playable preview card with "Sampling frames…", then
+  its duration and sampled frame count (e.g. "0:42 · 11 AI frames").
+- [ ] Paperclip → **Camera** opens the recorder; recording stops and attaches
+  the video, which goes through the same sampling flow.
+- [ ] With Microphone denied but Camera allowed, recording still works and
+  produces a video-only file (the recorder retries camera-only).
+- [ ] Pressing Send while a video is still extracting is blocked: the send
+  button is disabled with a "Preparing video frames…" tooltip and an error
+  explains the video is still being converted.
+- [ ] Staging a third video is rejected with the "up to 2 videos" message; the
+  first two stay staged.
+
+### 8. Window and voice behavior
 
 - [ ] Sidebar and capture overlay behave correctly across Spaces and full-screen
   apps.

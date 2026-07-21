@@ -1,69 +1,54 @@
-# Fallback chain
+# Chat fallback chain
 
-Smart Copilot and the operator can run on your own OpenAI-compatible endpoints,
-free hosted keys, and local on-device models. If one provider fails, the app
-tries the next provider until one answers.
+Smart Copilot keeps answering by walking a deliberately short provider chain:
+your own endpoint first, then free hosted keys. If one provider fails, the
+next takes over on the same request.
 
-## The chain
-
-```text
-  1. Primary provider      your OpenAI-compatible endpoint             [main]
-  2. Local fallback        optional Ollama or similar local gateway    [main]
-  3. Free hosted chain     Gemini -> Zhipu GLM -> OpenRouter           [main]
-                           each key is optional and stored encrypted
-  4. On-device SmolVLM     transformers.js, WebGPU/WASM                [renderer]
-                           no key, no network after model download
+```
+  1. Your own endpoint     corporate gateway / paid / local server     [main]
+                           (any OpenAI-compatible URL + model + key)
+  2. Free hosted keys      OpenRouter -> Google Gemini                 [main]
+                           (each skipped unless its key is saved)
 ```
 
-Tiers 1-3 use the same OpenAI-compatible client surface. Tier 4 runs in the
-renderer because it uses transformers.js in a worker.
+Each hosted provider gets one immediate retry before the chain moves on
+(free tiers occasionally drop a response mid-body). Whichever tier answers
+first wins; the rest are never called.
 
-## Request flow
+## When everything fails
 
-```text
-  renderer sends message/screenshot
-        |
-        v
-  main: ChatFlow.complete() -> ai.ts runWithFallback()
-        |                         |
-        |                         | try each configured network provider
-        |                         v
-        |                  all network providers failed
-        v                         |
-  append assistant turn           v
-                         main emits chat:fallback (+ context)
-                                   |
-                                   v
-                         renderer runs SmolVLM locally
-                                   |
-                                   v
-                         chat:fallback-result (text|null)
-```
+Two different situations get two different outcomes:
 
-The request stays pending while the chain runs, including while the on-device
-model downloads or generates.
+- **Nothing is configured at all** (fresh install): the chat shows an inline
+  setup card where the user pastes a free Gemini or OpenRouter key directly —
+  no Settings hunt. Company/personal endpoints link to the full Settings form.
+- **Keys exist but nothing answered** (outage, bad key, offline): the origin
+  chat gets a short error turn — "None of your connected AI providers could
+  answer. Check your keys in Settings and try again."
 
-## On-device tier
+The request stays pending while the chain runs and settles when a tier
+answers, the failure turn lands, or the user cancels that question.
 
-- Model: `HuggingFaceTB/SmolVLM-256M-Instruct`, falling back to
-  `SmolVLM-500M-Instruct` if needed.
-- Runtime: transformers.js, WebGPU first and WASM if WebGPU is unavailable.
-- First use downloads the model once, then it is cached and works offline.
+## Free hosted providers
 
-Files:
-
-- `src/renderer/sidebar/local-vlm.worker.ts`
-- `src/renderer/sidebar/localFallback.ts`
-
-## Configuring free hosted providers
-
-Open Settings -> "Free fallback models (optional)" and paste any of:
-
-| Provider | Where to get a free key | Default model |
+| Provider | Get a key at | Default model |
 | --- | --- | --- |
-| Google Gemini | aistudio.google.com/apikey | `gemini-2.5-flash` |
-| Zhipu GLM | open.bigmodel.cn | `glm-4v-flash` |
-| OpenRouter | openrouter.ai/keys | `openrouter/free` |
+| OpenRouter | openrouter.ai/settings/keys | `openrouter/free` (auto-picks a live free model) |
+| Google Gemini | aistudio.google.com/app/apikey | `gemini-2.5-flash` |
 
-Only providers with a stored key are tried. Keys are encrypted via the OS
-keychain and never written to `config.json`.
+Keys are encrypted with the macOS keychain (`openrouter-key.enc`,
+`gemini-key.enc`) and never stored in plain text. Requests to hosted providers
+include the screenshots/frames you send — that's inherent to using a hosted
+model.
+
+## What was removed (history)
+
+Earlier versions carried two more tiers: a user-configured "fallback gateway"
+(typically local Ollama) and an on-device SmolVLM model that answered when
+every network tier failed. Both were cut deliberately: the extra Settings
+fields confused far more users than they served, and the on-device model
+added a large one-time download for weak answers. Voice dictation still runs
+on-device (see [Voice](./VOICE.md)); chat requires one working provider.
+
+Source: `src/main/ai.ts` (`runWithFallback`), `src/main/config.ts`
+(`HOSTED_FALLBACKS`), `src/renderer/sidebar/SetupCard.tsx`.

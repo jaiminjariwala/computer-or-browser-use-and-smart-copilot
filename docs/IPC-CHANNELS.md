@@ -26,8 +26,8 @@ the same window without one engine's listeners firing on the other's events.
 | Channel | Purpose |
 | --- | --- |
 | `chat:send` | Send a typed message. |
-| `chat:send-captures` | Send staged screenshots/images (+ optional text) as one multi-image message. |
-| `chat:fallback-result` | Report the on-device fallback model's answer (or null when it failed). |
+| `chat:send-captures` | Send staged screenshots/images/video frames (+ optional text) as one multi-image message. |
+| `chat:cancel` | Cancel a still-thinking question; its late answer is dropped. |
 | `capture:trigger` | Begin a region capture. |
 | `capture:region` / `capture:cancel` | Rectangle chosen / capture cancelled. |
 | `session:new` / `session:get` / `session:list` / `session:open` / `session:delete` | Conversation management. |
@@ -37,16 +37,11 @@ the same window without one engine's listeners firing on the other's events.
 | `window:set-pinned` | Pin/unpin the window on top (header toggle). |
 | `github-auth:status` / `github-auth:start` / `github-auth:logout` | Read non-secret status, begin GitHub Device Flow, or delete the encrypted token. |
 
-### Main -> renderer (events)
-
-Copilot events include the originals (`turn:appended`, `request:pending`,
-`error:show`, `session:state`, `summary:state`, `credentials:required`) plus:
-
-| Channel | Purpose |
-| --- | --- |
-| `capture:staged` | A freshly captured shot to add to the carousel above the input. |
-| `chat:fallback` | Ask the renderer's on-device model to answer (carries the full context) when the gateway chain failed. |
-| `github-auth:changed` | Non-secret Device Flow status and minimal GitHub identity; never a token. |
+> **Video attachments never cross IPC as video.** An uploaded or recorded video
+> is sampled into ordered JPEG frames inside the sidebar renderer
+> (`sidebar/video.ts`), and those frames reuse `chat:send-captures` like any
+> other staged image. There is no video channel, and the raw file never leaves
+> the renderer.
 
 ### Main -> renderer (events)
 
@@ -58,6 +53,10 @@ Copilot events include the originals (`turn:appended`, `request:pending`,
 | `session:state` | Replace the active session view. |
 | `summary:state` | Update the goal/step tracker. |
 | `credentials:required` | Prompt to configure the gateway. |
+| `capture:staged` | A freshly captured shot to add to the carousel above the input. |
+| `setup:needed` | No AI provider is configured — show the in-chat key setup card. |
+| `request:started` / `request:settled` | Per-question thinking state (id = the asking user turn). |
+| `github-auth:changed` | Non-secret Device Flow status and minimal GitHub identity; never a token. |
 
 ## Operator channels (window.operator)
 

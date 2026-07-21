@@ -96,6 +96,7 @@ src/
 │  ├─ summarizer.ts      # folds old turns into the summary
 │  ├─ ipc.ts             # copilot ipcMain handlers + emitter helpers
 │  ├─ config.ts          # gateway config + encrypted credential store
+│  ├─ github-auth.ts     # GitHub Device Flow + safeStorage token store (main only)
 │  └─ operator/          # autonomous operator engine (self-contained)
 │     ├─ evals/          # deterministic AgentLoop scenarios, scoring, JSON CLI
 │     ├─ main/           # loop, safety, environments, executor, providers ...
@@ -115,17 +116,19 @@ src/
 ├─ preload/index.ts      # typed window.glass and window.operator bridges
 ├─ renderer/
 │  ├─ sidebar/           # shared chat shell + separate mode conversations
-│  │  ├─ App.tsx         # composer, captures, operator controls, task templates
+│  │  ├─ App.tsx         # composer, captures, operator controls
+│  │  ├─ ChatSidebar.tsx # history rail: chats, mode toggle, GitHub account, Settings
+│  │  ├─ VideoRecorder.tsx # getUserMedia/MediaRecorder camera recording dialog
+│  │  ├─ video.ts        # extractVideoFrames: local video -> bounded JPEG frames
+│  │  ├─ privacy.ts      # shared secret/identifier detection + redaction
 │  │  ├─ operator.ts     # privacy-aware operator activity explanations
-│  │  ├─ taskTemplates.ts # built-ins + bounded recent goals in sessionStorage
 │  │  ├─ pdf.ts          # rasterizes attached PDFs to images (pdfjs)
-│  │  ├─ localFallback.ts + local-vlm.worker.ts  # on-device fallback
+│  │  ├─ SetupCard.tsx    # in-chat key setup card (first-run, no provider)
 │  │  └─ Settings.tsx    # provider and fallback configuration
 │  ├─ overlay/           # capture surface
 │  ├─ indicator/         # agent-in-control overlay + Emergency Stop
 │  ├─ voice-lib/         # shared voice UI
-│  ├─ voice-lib-v2/      # Whisper engine
-│  └─ voice-lib-v3/      # Moonshine engine
+│  └─ voice-lib-v2/      # Whisper dictation engine (the only one)
 └─ shared/types.ts       # Smart Copilot types
 ```
 
@@ -172,17 +175,60 @@ code.
                               └─ text empty  → capture:staged ──ipc──► carousel above the input
 ```
 
-The overlay's follow-up decides the route: type a question during the drag and
-it sends immediately; leave it empty and the shot is staged. Staged shots (and
-images/PDFs added via the paperclip button, PDFs rasterized by `pdf.ts`) are
-sent together on Send via `chat:send-captures` as one multi-image message.
+Every capture stages into the composer carousel — the overlay has no input of
+its own; the question is typed (or dictated) in the one composer. Staged shots
+(and images/PDFs added via the paperclip button, PDFs rasterized by `pdf.ts`)
+are sent together on Send via `chat:send-captures` as one multi-image message.
+
+## Video attachment pipeline
+
+Videos join the same carousel as screenshots, but they are converted into a
+bounded image sequence entirely inside the sidebar renderer before anything is
+sent. The raw video file never crosses IPC and never reaches a provider.
+
+```
+ upload (paperclip → Files / drag&drop)  record (paperclip → Camera)
+   mp4 / m4v / mov / webm / ogv            getUserMedia + MediaRecorder
+              │                            (camera-only retry if mic denied)
+              └────────────┬───────────────┘
+                           ▼
+              staged carousel card: playable <video> preview
+              + "Sampling frames…" while extraction runs
+                           │
+                           ▼
+              extractVideoFrames() in sidebar/video.ts
+              ├─ recover duration (MediaRecorder WebM files often
+              │  omit it; a far seek reveals the real end time)
+              ├─ pick ≤ 12 timestamps (~1 per 4s, skewed off the
+              │  frequently-blank first/last samples)
+              ├─ seek + draw each frame to a canvas, downscaled so
+              │  the longest edge is ≤ 1280px
+              └─ encode JPEG data URLs -> TurnCapture[] where each
+                 carries videoFrame { sequenceId, index/count,
+                 timestampSeconds, durationSeconds }
+                           │
+                           ▼  Send (blocked with a tooltip while extracting)
+              chat:send-captures  — the same channel screenshots use
+                           │
+                           ▼
+              main ai.ts captureParts(): each frame becomes a text
+              label ("Video sequence <id>, frame i/n at m:ss …")
+              followed by a normal image_url part, so any vision
+              model reads the frames as one chronological video
+```
+
+Because frames reuse the existing `chat:send-captures` path, video support
+required no new IPC channel, no provider-side video API, and no change to the
+session model: a video is just a user turn whose `captures` include ordered
+`videoFrame` metadata.
 
 ## Reasoning fallback chain
 
-`ai.complete` no longer just tries one gateway. It runs a chain (primary
-OpenAI-compatible provider -> optional Ollama -> free hosted Gemini/GLM/OpenRouter),
-and if all of those fail the main process hands the context to an on-device
-SmolVLM model in the renderer (`chat:fallback` -> `chat:fallback-result`). See
+`ai.complete` no longer just tries one gateway. It runs a short chain — your
+own OpenAI-compatible endpoint, then the free hosted keys (OpenRouter ->
+Gemini). If everything fails, main decides the outcome: nothing configured at
+all -> the sidebar shows an in-chat key setup card (`setup:needed`); keys exist
+but unreachable -> a short error turn lands in the origin chat. See
 [Fallback chain](./FALLBACK.md).
 
 ## Window behavior
@@ -213,14 +259,13 @@ challenge code/URL, and minimal identity.
 | overlay → main | `capture:region` / `capture:cancel` | rectangle chosen / cancelled |
 | SB → main | `session:new/get/list/open/delete` | conversation management |
 | SB → main | `models:list` | list gateway models |
-| SB → main | `config:get-status` / `config:save` | gateway + fallback settings |
-| SB → main | `chat:fallback-result` | on-device fallback answer (or null) |
+| SB → main | `config:get-status` / `config:save` | provider settings + keys |
 | SB → main | `window:set-pinned` | pin/unpin the window on top |
 | SB → main | `github-auth:status/start/logout` | non-secret status, begin Device Flow, or remove the encrypted token |
 | main → SB | `github-auth:changed` | non-secret sign-in lifecycle and minimal identity |
 | main → SB | `turn:appended`, `request:pending`, `error:show`, `session:state`, `summary:state`, `credentials:required` | live UI updates |
 | main → SB | `capture:staged` | a captured shot to add to the carousel |
-| main → SB | `chat:fallback` | ask the on-device model to answer (with context) |
+| main → SB | `setup:needed` | no provider configured — show the in-chat key setup card |
 
 The operator engine adds its own `op:*` channels on a second bridge
 (`window.operator`), kept separate from the copilot channels above. The full map
@@ -236,5 +281,18 @@ packages the `.app`. See [Development](./DEVELOPMENT.md).
   the preload bridge.
 - Renderer CSP is restrictive, with a deliberate relaxation for the on-device
   speech model (WASM/WebGPU + model fetch). See [Voice](./VOICE.md).
+- The sidebar CSP additionally allows `media-src 'self' blob:` so the staged
+  video preview card can play a local blob URL; no remote media source is
+  allowed.
+- A Chromium permission request handler in `index.ts` grants only the `media`
+  permission, and only to the trusted sidebar `webContents`; every other
+  permission and every other renderer is denied.
 - Screen Recording is a runtime macOS permission (TCC), not an entitlement.
-- Microphone uses an entitlement + `NSMicrophoneUsageDescription`.
+- Microphone uses an entitlement + `NSMicrophoneUsageDescription`; the usage
+  string also covers audio in videos you record in-app.
+- Camera recording uses the `com.apple.security.device.camera` entitlement +
+  `NSCameraUsageDescription` (asked the first time you open the recorder).
+- GitHub access tokens are encrypted with `safeStorage` in the main process
+  (`github-token.enc`) and never cross the preload bridge; the renderer sees
+  only non-secret status, the short user code, the verification URL, and
+  minimal identity.

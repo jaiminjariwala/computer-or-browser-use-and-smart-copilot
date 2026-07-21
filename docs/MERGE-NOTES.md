@@ -112,9 +112,13 @@ seeds the operator config with the same OpenAI-compatible providers.
 
 ## What was dropped
 
-- The **headless Playwright browser** environment was removed. Only the sandboxed
-  Linux desktop and the local Mac remain. This also removed the only `playwright`
-  dependency, so it does not need to be installed.
+- The **headless Playwright browser** environment was removed *at merge time*,
+  leaving only the sandboxed Linux desktop and the local Mac. That step is
+  history now: Playwright later returned as today's **visible, DOM-first
+  Browser Use** environment (`environment/browser-environment.ts`), so
+  `playwright` **is** a project dependency again. What stayed dropped is the
+  old *headless* variant — the current one launches a Chromium window you can
+  watch.
 - The old **"never modify click-copilot" independence guard** (a byte-for-byte
   test in the operator project) was retired, since the merge intentionally
   reverses that constraint.
