@@ -72,7 +72,8 @@ export const TASK_COMPLETE_TOOL: ChatCompletionTool = {
     type: 'function',
     function: {
         name: 'task_complete',
-        description: 'Signal that the Goal has been accomplished. Call this instead of `computer` when no further action is needed.',
+        description:
+            'Signal that the Goal has been accomplished. Call this instead of `computer` when no further action is needed. You MUST include `evidence` — a short verbatim quote from the CURRENT observation proving the goal state; a claim whose evidence does not appear in the observation is rejected.',
         parameters: {
             type: 'object',
             additionalProperties: false,
@@ -80,9 +81,14 @@ export const TASK_COMPLETE_TOOL: ChatCompletionTool = {
                 summary: {
                     type: 'string',
                     description: 'A short summary of what was accomplished.'
+                },
+                evidence: {
+                    type: 'string',
+                    description:
+                        'A short verbatim quote from the current observation — visible page text, the page title, or the URL — that proves the goal state was reached. Copy it exactly as it appears.'
                 }
             },
-            required: ['summary']
+            required: ['summary', 'evidence']
         }
     }
 }

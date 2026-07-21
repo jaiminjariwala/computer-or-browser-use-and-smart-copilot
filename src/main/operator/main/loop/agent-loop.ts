@@ -30,6 +30,7 @@ import type {
 } from './deps'
 import { isTerminalState, type TerminalState } from './states'
 import { actionSignature, buildProgressHint, hardStuckReason } from './progress'
+import { verifyCompletionEvidence } from './verify-completion'
 
 /** Most-recent executed Actions retained for stuck/repeat detection. */
 const PROGRESS_WINDOW = 8
@@ -94,6 +95,14 @@ function errorMessage(err: unknown): string {
  */
 const MAX_REASONING_RETRIES = 5
 
+/**
+ * How many `task_complete` claims may fail the evidence gate before the run is
+ * ended as failed. Unlike reasoning failures this does NOT reset on progress:
+ * three bogus "done" claims across one run means the model cannot verify its
+ * own goal state, and further budget would be wasted on the same claim.
+ */
+const MAX_REJECTED_COMPLETIONS = 3
+
 /** Backoff before retrying after a provider/infra failure (transient 429s). */
 const RETRY_BACKOFF_MS = 4000
 
@@ -148,6 +157,9 @@ export class AgentLoop {
      * hiccup or one bad model turn no longer aborts the whole task.
      */
     private reasoningFailures = 0
+
+    /** Completion claims rejected by the evidence gate this run (never resets). */
+    private rejectedCompletions = 0
     /**
      * The most-recent executed Actions (capped at {@link PROGRESS_WINDOW}), used
      * to detect the agent repeating the same ineffective Action so it can be
@@ -581,7 +593,46 @@ export class AgentLoop {
                 return false
             }
 
-            case 'completion':
+            case 'completion': {
+                // Evidence gate (premature-"done" guard): the claim must quote
+                // something that actually appears in the observation the model
+                // just reasoned over. An unverified claim is recorded as a
+                // failure the model sees next turn — it either keeps working
+                // or comes back with real evidence (Req 6.2).
+                const verdict = verifyCompletionEvidence(outcome.evidence, this.currentObservation)
+                if (!verdict.verified) {
+                    this.recordStep({
+                        observation: this.currentObservation,
+                        reasoning: {
+                            outcome: 'failure',
+                            rationale: `completion-unverified: ${verdict.reason}. Do not call task_complete until the goal state is visible in the observation; keep working toward the Goal or request help.`,
+                            providerId: outcome.providerId,
+                            model: outcome.model,
+                            usage: outcome.usage
+                        }
+                    })
+                    this.rejectedCompletions += 1
+                    if (this.rejectedCompletions < MAX_REJECTED_COMPLETIONS) {
+                        if (this.stopped || this.safety.isStopped()) {
+                            this.handleHalt()
+                            return false
+                        }
+                        this.transition('perceiving')
+                        return true
+                    }
+                    // Repeatedly claiming an unverifiable "done" is not
+                    // progress — end the run as failed instead of burning the
+                    // remaining step budget on the same claim.
+                    this.emitters.emitError?.({
+                        kind: 'reasoning-unparseable',
+                        message: `The agent repeatedly claimed completion without verifiable on-screen evidence (${verdict.reason}).`,
+                        recoverable: true,
+                        action: 'retry'
+                    })
+                    this.enterTerminal('failed')
+                    return false
+                }
+
                 // Completion signal → no Action executes; report result (Req 6.2, 3.6).
                 this.recordStep({
                     observation: this.currentObservation,
@@ -596,6 +647,7 @@ export class AgentLoop {
                 this.enterTerminal('completed')
                 this.emitters.presentCompletion?.(outcome.summary)
                 return false
+            }
 
             case 'help':
                 // Help signal → no Action executes; present the question (Req 6.4, 3.6).

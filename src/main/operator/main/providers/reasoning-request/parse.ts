@@ -32,6 +32,20 @@ export interface ReasoningResponseMessage {
 type MaybePoint = { x: number; y: number } | undefined
 
 /**
+ * Optional parse-time context supplied by the provider.
+ *
+ * `scrollAnchor` is the image-space point a coordinate-less `scroll` is
+ * anchored at — the center of the screenshot the model was shown. Models
+ * (Gemini 2.5 Flash among them) routinely emit page-level scrolls like
+ * `{"action":"scroll","dy":400}` with no x/y; that is a perfectly executable
+ * intent, and failing it closed burned steps and stalled real tasks. The
+ * anchor keeps Action_Space itself strict (executors always get `at`).
+ */
+export interface ParseReasoningOptions {
+    scrollAnchor?: { x: number; y: number }
+}
+
+/**
  * A finite number, or undefined. Also coerces a numeric STRING (e.g. `"1227"`)
  * to a number, because some OpenAI-compatible endpoints (notably Gemini) emit
  * function-call arguments with numeric fields serialized as strings; without
@@ -92,15 +106,19 @@ function readKeys(args: Record<string, unknown>): string[] | undefined {
     return undefined
 }
 
-/** Read scroll deltas from either {dx,dy} or {scroll_direction, scroll_amount}. */
+/**
+ * Read scroll deltas from `{dx,dy}`, `{scroll_direction, scroll_amount}`, or
+ * the unprefixed `{direction, amount}` some models emit.
+ */
 function readScrollDelta(args: Record<string, unknown>): { dx: number; dy: number } | undefined {
     const dx = finite(args.dx)
     const dy = finite(args.dy)
     if (dx !== undefined || dy !== undefined) return { dx: dx ?? 0, dy: dy ?? 0 }
 
-    const dir = typeof args.scroll_direction === 'string' ? args.scroll_direction.toLowerCase() : ''
+    const rawDir = args.scroll_direction ?? args.direction
+    const dir = typeof rawDir === 'string' ? rawDir.toLowerCase() : ''
     if (dir) {
-        const amount = finite(args.scroll_amount) ?? 3
+        const amount = finite(args.scroll_amount) ?? finite(args.amount) ?? 3
         const px = amount * SCROLL_UNIT_PX
         switch (dir) {
             case 'down':
@@ -128,7 +146,7 @@ function readScrollDelta(args: Record<string, unknown>): { dx: number; dy: numbe
  * (`left_click_drag`→drag, `triple_click`→double_click, `middle_click`→left_click,
  * `cursor_position`→screenshot). Fails closed only when no mapping is valid.
  */
-function toolArgsToAction(args: Record<string, unknown>): Action | null {
+function toolArgsToAction(args: Record<string, unknown>, opts?: ParseReasoningOptions): Action | null {
     const rawKind = args.action
     if (typeof rawKind !== 'string') return null
 
@@ -194,9 +212,10 @@ function toolArgsToAction(args: Record<string, unknown>): Action | null {
         }
         case 'scroll': {
             const delta = readScrollDelta(args)
-            candidate = delta
-                ? { kind, at: extractPoint(args, 'x', 'y', ['coordinate']), dx: delta.dx, dy: delta.dy }
-                : null
+            // A scroll without coordinates means "scroll the page" — anchor it
+            // at the provider-supplied screenshot center instead of failing.
+            const at = extractPoint(args, 'x', 'y', ['coordinate']) ?? opts?.scrollAnchor
+            candidate = delta ? { kind, at, dx: delta.dx, dy: delta.dy } : null
             break
         }
         case 'wait': {
@@ -227,7 +246,10 @@ function toolArgsToAction(args: Record<string, unknown>): Action | null {
  *
  * This function is total: for any input it returns one outcome with one `kind`.
  */
-export function parseReasoningResponse(message: ReasoningResponseMessage): ReasoningOutcome {
+export function parseReasoningResponse(
+    message: ReasoningResponseMessage,
+    opts?: ParseReasoningOptions
+): ReasoningOutcome {
     const toolCalls = message.toolCalls ?? []
 
     if (toolCalls.length === 0) {
@@ -257,7 +279,7 @@ export function parseReasoningResponse(message: ReasoningResponseMessage): Reaso
 
     switch (call.name) {
         case 'computer': {
-            const action = toolArgsToAction(args)
+            const action = toolArgsToAction(args, opts)
             if (!action) {
                 // Include a compact echo of what the model sent so an unmappable
                 // emission is diagnosable instead of an opaque failure.
@@ -285,7 +307,13 @@ export function parseReasoningResponse(message: ReasoningResponseMessage): Reaso
                 typeof args.summary === 'string' && args.summary.trim().length > 0
                     ? args.summary.trim()
                     : 'Task complete.'
-            return { kind: 'completion', summary }
+            const evidence =
+                typeof args.evidence === 'string' && args.evidence.trim().length > 0
+                    ? args.evidence.trim()
+                    : undefined
+            return evidence
+                ? { kind: 'completion', summary, evidence }
+                : { kind: 'completion', summary }
         }
         case 'request_help': {
             const question =

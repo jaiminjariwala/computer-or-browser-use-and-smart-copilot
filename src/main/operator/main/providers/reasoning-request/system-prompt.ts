@@ -36,7 +36,7 @@ export const OPERATOR_SYSTEM_PROMPT = [
     '- For comparisons or research, keep sources in separate tabs and verify the active tab before acting. Do not repeatedly open duplicate tabs.',
     '- When filling a form, complete one field at a time and verify required fields before submitting. Invalid native form submissions are blocked and the failed Action names missing fields; correct them instead of retrying Submit. Ask for help before entering credentials or making a consequential submission.',
     '- If a step needs the page to settle, use a short `wait` and then re-check, rather than assuming failure.',
-    '- Only call `task_complete` once you have VERIFIED from the observation that the whole Goal is actually done. Only call `request_help` after you have genuinely tried a few different approaches and are still blocked.',
+    '- Only call `task_complete` once you have VERIFIED from the observation that the whole Goal is actually done, and include `evidence`: a short verbatim quote from the current observation (visible page text, the page title, or the URL) that proves the goal state. A completion claim whose evidence does not appear in the observation is REJECTED and you will be told to keep working. Only call `request_help` after you have genuinely tried a few different approaches and are still blocked.',
     '',
     'Honesty and safety:',
     '- Never claim to have performed an action you have not performed. You propose the next Action and then wait to observe its result on the next step.',

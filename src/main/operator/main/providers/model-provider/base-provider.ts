@@ -155,10 +155,20 @@ export abstract class OpenAICompatibleModelProvider implements ModelProvider {
         // return `{ error: ... }` on failure); crashing here would abort the
         // whole run instead of failing this one step gracefully.
         const message = result?.choices?.[0]?.message
-        const outcome = parseReasoningResponse({
-            content: message?.content ?? null,
-            toolCalls: normalizeToolCalls(message?.tool_calls)
-        })
+        // Anchor coordinate-less scrolls at the center of the screenshot the
+        // model reasoned over ("scroll the page"); Action_Space stays strict.
+        const { imageWidth, imageHeight } = ctx.currentObservation
+        const scrollAnchor =
+            imageWidth > 0 && imageHeight > 0
+                ? { x: Math.round(imageWidth / 2), y: Math.round(imageHeight / 2) }
+                : undefined
+        const outcome = parseReasoningResponse(
+            {
+                content: message?.content ?? null,
+                toolCalls: normalizeToolCalls(message?.tool_calls)
+            },
+            { scrollAnchor }
+        )
         // Annotate the outcome with observability metadata: the concrete model id
         // and the token usage the endpoint reported (when it reports any).
         const usage = toTokenUsage(result?.usage)

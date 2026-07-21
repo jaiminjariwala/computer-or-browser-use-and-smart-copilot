@@ -35,5 +35,6 @@ export {
 export {
     parseReasoningResponse,
     type ParsedToolCall,
+    type ParseReasoningOptions,
     type ReasoningResponseMessage
 } from './reasoning-request/parse'

@@ -51,7 +51,16 @@ export interface ReasoningContext {
 /** Exactly one typed outcome parsed from a Model_Provider response (Req 3.2). */
 export type ReasoningOutcome =
     | { kind: 'action'; action: Action; rationale: string }
-    | { kind: 'completion'; summary: string }
+    | {
+        kind: 'completion'
+        summary: string
+        /**
+         * The model's verbatim quote from the current observation backing the
+         * claim (page text / title / URL). The loop's evidence gate rejects a
+         * completion whose quote does not appear in the live observation.
+         */
+        evidence?: string
+    }
     | { kind: 'help'; question: string }
     | { kind: 'failure'; reason: string }
 

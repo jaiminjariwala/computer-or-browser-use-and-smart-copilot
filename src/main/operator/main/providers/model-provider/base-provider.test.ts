@@ -98,3 +98,94 @@ describe('OpenAICompatibleModelProvider observability', () => {
         expect(outcome.usage).toBeUndefined()
     })
 })
+
+describe('coordinate-less scroll anchoring', () => {
+    function scrollResult(args: Record<string, unknown>): OperatorChatResult {
+        return {
+            choices: [
+                {
+                    message: {
+                        content: null,
+                        tool_calls: [
+                            {
+                                type: 'function',
+                                function: { name: 'computer', arguments: JSON.stringify(args) }
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    }
+
+    it('anchors a page scroll with no x/y at the screenshot center (Gemini emission)', async () => {
+        // Verbatim shape from a real gemini-2.5-flash run that previously failed:
+        // {"dy":400,"rationale":"Scroll down to find more MrBeast videos.","action":"scroll"}
+        const provider = makeProvider(
+            scrollResult({ dy: 400, rationale: 'Scroll down to find more videos.', action: 'scroll' })
+        )
+        const outcome = await provider.reason(makeContext())
+        expect(outcome.kind).toBe('action')
+        if (outcome.kind !== 'action') return
+        expect(outcome.action).toEqual({ kind: 'scroll', at: { x: 50, y: 50 }, dx: 0, dy: 400 })
+    })
+
+    it('maps the unprefixed direction/amount dialect onto anchored deltas', async () => {
+        const provider = makeProvider(
+            scrollResult({ action: 'scroll', direction: 'down', amount: 4 })
+        )
+        const outcome = await provider.reason(makeContext())
+        expect(outcome.kind).toBe('action')
+        if (outcome.kind !== 'action') return
+        expect(outcome.action).toEqual({ kind: 'scroll', at: { x: 50, y: 50 }, dx: 0, dy: 400 })
+    })
+
+    it('still prefers explicit model-supplied scroll coordinates over the anchor', async () => {
+        const provider = makeProvider(
+            scrollResult({ action: 'scroll', x: 10, y: 20, dy: -300 })
+        )
+        const outcome = await provider.reason(makeContext())
+        expect(outcome.kind).toBe('action')
+        if (outcome.kind !== 'action') return
+        expect(outcome.action).toEqual({ kind: 'scroll', at: { x: 10, y: 20 }, dx: 0, dy: -300 })
+    })
+})
+
+describe('task_complete evidence plumb-through', () => {
+    function completionResult(args: Record<string, unknown>): OperatorChatResult {
+        return {
+            choices: [
+                {
+                    message: {
+                        content: null,
+                        tool_calls: [
+                            {
+                                type: 'function',
+                                function: { name: 'task_complete', arguments: JSON.stringify(args) }
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    }
+
+    it('carries the evidence quote on the completion outcome', async () => {
+        const provider = makeProvider(
+            completionResult({ summary: 'Played the song.', evidence: 'Closer - The Chainsmokers' })
+        )
+        const outcome = await provider.reason(makeContext())
+        expect(outcome.kind).toBe('completion')
+        if (outcome.kind !== 'completion') return
+        expect(outcome.summary).toBe('Played the song.')
+        expect(outcome.evidence).toBe('Closer - The Chainsmokers')
+    })
+
+    it('leaves evidence undefined when the model omits it', async () => {
+        const provider = makeProvider(completionResult({ summary: 'Done.' }))
+        const outcome = await provider.reason(makeContext())
+        expect(outcome.kind).toBe('completion')
+        if (outcome.kind !== 'completion') return
+        expect(outcome.evidence).toBeUndefined()
+    })
+})
