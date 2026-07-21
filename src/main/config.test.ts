@@ -73,10 +73,7 @@ describe('ConfigStore', () => {
             expect(await store.readConfig()).toEqual({
                 baseURL: '',
                 model: '',
-                fallbackBaseURL: '',
-                fallbackModel: '',
                 openrouterModel: '',
-                glmModel: '',
                 geminiModel: '',
                 captureMode: 'rectangle'
             })
@@ -87,10 +84,7 @@ describe('ConfigStore', () => {
             expect(await store.readConfig()).toEqual({
                 baseURL: 'https://gw.example/v1',
                 model: 'gemini-vision',
-                fallbackBaseURL: '',
-                fallbackModel: '',
                 openrouterModel: '',
-                glmModel: '',
                 geminiModel: '',
                 captureMode: 'rectangle'
             })
@@ -107,10 +101,7 @@ describe('ConfigStore', () => {
             expect(JSON.parse(raw)).toEqual({
                 baseURL: 'https://gw.example/v1',
                 model: 'm',
-                fallbackBaseURL: '',
-                fallbackModel: '',
                 openrouterModel: '',
-                glmModel: '',
                 geminiModel: '',
                 captureMode: 'rectangle'
             })
@@ -121,10 +112,7 @@ describe('ConfigStore', () => {
             expect(await store.readConfig()).toEqual({
                 baseURL: '',
                 model: '',
-                fallbackBaseURL: '',
-                fallbackModel: '',
                 openrouterModel: '',
-                glmModel: '',
                 geminiModel: '',
                 captureMode: 'rectangle'
             })
@@ -171,10 +159,7 @@ describe('ConfigStore', () => {
             expect(await store.readConfig()).toEqual({
                 baseURL: 'https://gw',
                 model: 'm',
-                fallbackBaseURL: '',
-                fallbackModel: '',
                 openrouterModel: '',
-                glmModel: '',
                 geminiModel: '',
                 captureMode: 'rectangle'
             })
@@ -187,10 +172,7 @@ describe('ConfigStore', () => {
             expect(await store.readConfig()).toEqual({
                 baseURL: 'https://gw2',
                 model: 'm2',
-                fallbackBaseURL: '',
-                fallbackModel: '',
                 openrouterModel: '',
-                glmModel: '',
                 geminiModel: '',
                 captureMode: 'rectangle'
             })
@@ -204,13 +186,8 @@ describe('ConfigStore', () => {
                 hasCredentials: false,
                 baseURL: '',
                 model: '',
-                fallbackBaseURL: '',
-                fallbackModel: '',
-                hasFallback: false,
                 hasOpenrouter: false,
                 openrouterModel: '',
-                hasGlm: false,
-                glmModel: '',
                 hasGemini: false,
                 geminiModel: '',
                 captureMode: 'rectangle'
@@ -236,13 +213,8 @@ describe('ConfigStore', () => {
                 hasCredentials: true,
                 baseURL: 'https://gw',
                 model: 'm',
-                fallbackBaseURL: '',
-                fallbackModel: '',
-                hasFallback: false,
                 hasOpenrouter: false,
                 openrouterModel: '',
-                hasGlm: false,
-                glmModel: '',
                 hasGemini: false,
                 geminiModel: '',
                 captureMode: 'rectangle'
@@ -283,13 +255,8 @@ describe('config IPC', () => {
             hasCredentials: true,
             baseURL: 'https://gw',
             model: 'm',
-            fallbackBaseURL: '',
-            fallbackModel: '',
-            hasFallback: false,
             hasOpenrouter: false,
             openrouterModel: '',
-            hasGlm: false,
-            glmModel: '',
             hasGemini: false,
             geminiModel: '',
             captureMode: 'rectangle'

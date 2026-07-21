@@ -38,19 +38,16 @@ export const safeStorageCodec: SecretCodec = {
 const CONFIG_FILENAME = 'config.json'
 /** Encrypted API key bytes live here, separate from the JSON config. */
 const API_KEY_FILENAME = 'gateway-key.enc'
-/** Encrypted fallback API key bytes. */
-const FALLBACK_KEY_FILENAME = 'gateway-fallback-key.enc'
 
 /**
- * Built-in free hosted fallback providers, tried in order after the primary
- * gateway (and the user's optional Ollama fallback) and before the on-device
- * model. All are OpenAI-compatible, so one client factory serves all three; the
- * user pastes a free key once and it is used automatically forever after.
+ * Built-in free hosted providers, tried in order after the user's own
+ * (corporate/personal) gateway. Both are OpenAI-compatible, so one client
+ * factory serves them; the user pastes a free key once and it is used
+ * automatically forever after.
  *
  *  - OpenRouter: the `openrouter/free` router auto-selects a free model that
  *    supports the request's needs (image understanding + tool calling), so the
  *    slug keeps working even as individual free models come and go.
- *  - Zhipu GLM: `glm-4v-flash` is a free vision model.
  *  - Google Gemini: OpenAI-compatible endpoint, generous free tier, vision.
  */
 export const HOSTED_FALLBACKS = {
@@ -62,11 +59,6 @@ export const HOSTED_FALLBACKS = {
         // the router avoids that by never pinning a single dead model.
         defaultModel: 'openrouter/free',
         keyFile: 'openrouter-key.enc'
-    },
-    glm: {
-        baseURL: 'https://open.bigmodel.cn/api/paas/v4',
-        defaultModel: 'glm-4v-flash',
-        keyFile: 'glm-key.enc'
     },
     gemini: {
         baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai',
@@ -84,10 +76,7 @@ export type HostedFallbackId = keyof typeof HOSTED_FALLBACKS
 export const EMPTY_CONFIG: GatewayConfig = {
     baseURL: '',
     model: '',
-    fallbackBaseURL: '',
-    fallbackModel: '',
     openrouterModel: '',
-    glmModel: '',
     geminiModel: '',
     captureMode: 'rectangle'
 }
@@ -125,10 +114,6 @@ export class ConfigStore {
         return join(this.dir, API_KEY_FILENAME)
     }
 
-    private get fallbackKeyPath(): string {
-        return join(this.dir, FALLBACK_KEY_FILENAME)
-    }
-
     /** Read the non-secret config. Missing or malformed files yield EMPTY_CONFIG. */
     async readConfig(): Promise<GatewayConfig> {
         try {
@@ -137,12 +122,8 @@ export class ConfigStore {
             return {
                 baseURL: typeof parsed.baseURL === 'string' ? parsed.baseURL : '',
                 model: typeof parsed.model === 'string' ? parsed.model : '',
-                fallbackBaseURL:
-                    typeof parsed.fallbackBaseURL === 'string' ? parsed.fallbackBaseURL : '',
-                fallbackModel: typeof parsed.fallbackModel === 'string' ? parsed.fallbackModel : '',
                 openrouterModel:
                     typeof parsed.openrouterModel === 'string' ? parsed.openrouterModel : '',
-                glmModel: typeof parsed.glmModel === 'string' ? parsed.glmModel : '',
                 geminiModel: typeof parsed.geminiModel === 'string' ? parsed.geminiModel : '',
                 captureMode: 'rectangle'
             }
@@ -159,10 +140,7 @@ export class ConfigStore {
             {
                 baseURL: config.baseURL,
                 model: config.model,
-                fallbackBaseURL: config.fallbackBaseURL ?? '',
-                fallbackModel: config.fallbackModel ?? '',
                 openrouterModel: config.openrouterModel ?? '',
-                glmModel: config.glmModel ?? '',
                 geminiModel: config.geminiModel ?? '',
                 captureMode: config.captureMode ?? 'rectangle'
             },
@@ -217,43 +195,7 @@ export class ConfigStore {
         }
     }
 
-    /** Whether an encrypted fallback API key is stored. */
-    async hasFallbackApiKey(): Promise<boolean> {
-        try {
-            const buf = await fs.readFile(this.fallbackKeyPath)
-            return buf.length > 0
-        } catch {
-            return false
-        }
-    }
-
-    /** Decrypt and return the stored fallback API key, or null. */
-    async getFallbackApiKey(): Promise<string | null> {
-        let buf: Buffer
-        try {
-            buf = await fs.readFile(this.fallbackKeyPath)
-        } catch {
-            return null
-        }
-        if (buf.length === 0) return null
-        try {
-            return this.codec.decryptString(buf)
-        } catch {
-            return null
-        }
-    }
-
-    /** Encrypt and store the fallback API key. */
-    async setFallbackApiKey(apiKey: string): Promise<void> {
-        if (!this.codec.isEncryptionAvailable()) {
-            throw new EncryptionUnavailableError()
-        }
-        await fs.mkdir(this.dir, { recursive: true })
-        const encrypted = this.codec.encryptString(apiKey)
-        await fs.writeFile(this.fallbackKeyPath, encrypted)
-    }
-
-    // -- built-in hosted fallback chain (OpenRouter / GLM / Gemini) ----------
+    // -- built-in free hosted providers (OpenRouter / Gemini) ----------------
 
     private hostedKeyPath(id: HostedFallbackId): string {
         return join(this.dir, HOSTED_FALLBACKS[id].keyFile)
@@ -303,7 +245,6 @@ export class ConfigStore {
         const config = await this.readConfig()
         const modelFor: Record<HostedFallbackId, string> = {
             openrouter: config.openrouterModel ?? '',
-            glm: config.glmModel ?? '',
             gemini: config.geminiModel ?? ''
         }
         const out: Array<{ baseURL: string; model: string; apiKey: string }> = []
@@ -325,26 +266,16 @@ export class ConfigStore {
     async getStatus(): Promise<ConfigStatus> {
         const config = await this.readConfig()
         const hasKey = await this.hasApiKey()
-        const fallbackBaseURL = config.fallbackBaseURL ?? ''
-        // Ollama needs no key, so a fallback counts as configured once it has a
-        // base URL + model (key optional).
-        const hasFallback = fallbackBaseURL.trim().length > 0 && (config.fallbackModel ?? '').trim().length > 0
-        const [hasOpenrouter, hasGlm, hasGemini] = await Promise.all([
+        const [hasOpenrouter, hasGemini] = await Promise.all([
             this.hasHostedKey('openrouter'),
-            this.hasHostedKey('glm'),
             this.hasHostedKey('gemini')
         ])
         return {
             hasCredentials: hasKey && config.baseURL.trim().length > 0,
             baseURL: config.baseURL,
             model: config.model,
-            fallbackBaseURL,
-            fallbackModel: config.fallbackModel ?? '',
-            hasFallback,
             hasOpenrouter,
             openrouterModel: config.openrouterModel ?? '',
-            hasGlm,
-            glmModel: config.glmModel ?? '',
             hasGemini,
             geminiModel: config.geminiModel ?? '',
             captureMode: config.captureMode ?? 'rectangle'
@@ -358,15 +289,12 @@ export class ConfigStore {
      */
     async save(input: GatewayConfigInput): Promise<void> {
         // Merge with existing config so a partial save (e.g. switching model
-        // from the picker) never wipes fallback settings or capture mode.
+        // from the picker) never wipes other settings or capture mode.
         const existing = await this.readConfig()
         await this.writeConfig({
             baseURL: input.baseURL,
             model: input.model,
-            fallbackBaseURL: input.fallbackBaseURL ?? existing.fallbackBaseURL ?? '',
-            fallbackModel: input.fallbackModel ?? existing.fallbackModel ?? '',
             openrouterModel: input.openrouterModel ?? existing.openrouterModel ?? '',
-            glmModel: input.glmModel ?? existing.glmModel ?? '',
             geminiModel: input.geminiModel ?? existing.geminiModel ?? '',
             captureMode: input.captureMode ?? existing.captureMode ?? 'rectangle'
         })
@@ -374,14 +302,9 @@ export class ConfigStore {
         if (trimmedKey.length > 0) {
             await this.setApiKey(input.apiKey)
         }
-        const trimmedFallbackKey = input.fallbackApiKey?.trim() ?? ''
-        if (trimmedFallbackKey.length > 0) {
-            await this.setFallbackApiKey(input.fallbackApiKey ?? '')
-        }
-        // Persist any newly-entered hosted fallback keys (empty leaves as-is).
+        // Persist any newly-entered hosted keys (empty leaves as-is).
         const hostedKeys: Array<[HostedFallbackId, string | undefined]> = [
             ['openrouter', input.openrouterApiKey],
-            ['glm', input.glmApiKey],
             ['gemini', input.geminiApiKey]
         ]
         for (const [id, key] of hostedKeys) {
